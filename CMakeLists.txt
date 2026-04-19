@@ -105,17 +105,20 @@ endif()
 #  4. 构建目标 (Build Targets)
 # =============================================================
 
+enable_testing()
+
 # 4.1 主程序
-file(GLOB_RECURSE SOURCES "src/*.cpp")
+file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS "src/*.cpp")
+list(FILTER SOURCES EXCLUDE REGEX ".*/src/tests/.*\\.cpp$")
 add_executable(fes_app ${SOURCES})
 target_link_libraries(fes_app PRIVATE Z3::Z3)
 if(KISSAT_LIB)
     target_link_libraries(fes_app PRIVATE ${KISSAT_LIB})
 endif()
 
-# # 4.2 环境测试程序 (TestEnv)
-# add_executable(test_env tests/TestEnv.cpp)
-# target_link_libraries(test_env PRIVATE Z3::Z3)
-# if(KISSAT_LIB)
-#     target_link_libraries(test_env PRIVATE ${KISSAT_LIB})
-# endif()
+# 4.2 NPN 单元测试
+add_executable(test_npn
+    src/tests/test_npn.cpp
+    src/core/NpnTransform.cpp
+)
+add_test(NAME test_npn COMMAND test_npn)

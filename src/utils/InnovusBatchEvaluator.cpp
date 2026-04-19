@@ -1,4 +1,5 @@
 #include "fes/utils/InnovusBatchEvaluator.h"
+#include "fes/core/NpnTransform.h"
 #include "fes/core/Types.h"
 #include <fstream>
 #include <iostream>
@@ -18,8 +19,17 @@ namespace fes {
 
 // ABC "-K <n> -a" fragment, parameterized by the project-wide LUT constant.
 // Used for every `if -K <n> -a` command string we shell out to.
+constexpr double kInverterPowerPenalty = 0.001;
+
 static inline std::string abcLutK() {
     return std::to_string(kLutMaxInputs);
+}
+
+static inline std::string truthTableHexKey(LutTruthTable tt) {
+    std::stringstream hss;
+    hss << std::uppercase << std::hex << std::setfill('0')
+        << std::setw(kLutTruthTableHexDigits) << tt;
+    return hss.str();
 }
 
 InnovusBatchEvaluator::InnovusBatchEvaluator(const std::string& lib, const std::string& py, const std::string& abc)
@@ -514,6 +524,8 @@ std::string fes::InnovusBatchEvaluator::rewriteBlifWithLibrary(
     cfg.kGateWeight          = isAggressive ? 0.002 : 0.005;
     cfg.kOutputWeight        = 0.0;
     cfg.kActivityWeight      = 0.0;
+    cfg.enableNpn           = true;
+    cfg.allowNegation       = true;
     cfg.useImprovementFilter = false;
     cfg.cleanupAbcSeq        = "sweep; topo";
     cfg.tag                  = isAggressive ? "PONO_agg" : "PONO_cons";
@@ -650,10 +662,31 @@ std::string fes::InnovusBatchEvaluator::rewriteBlifUnified(
         [&](const std::string& fragment,
             const std::unordered_map<std::string, std::string>& portMap,
             const std::set<std::string>& pioSet,
-            const std::string& localSuffix) -> std::string {
+            const std::string& localSuffix,
+            const NpnRecipe& recipe,
+            const std::vector<std::string>& canonicalPorts,
+            const std::string& realOutNet) -> std::string {
             std::stringstream ss(fragment);
             std::string ln;
+            std::string prelude;
             std::string processed;
+            std::string epilogue;
+
+            for (size_t i = 0; i < canonicalPorts.size(); ++i) {
+                if (!recipe.inputNegations.empty() && recipe.inputNegations[i]) {
+                    const std::string invWire =
+                        "inv_in_" + std::to_string(i) + localSuffix;
+                    prelude += ".names " + canonicalPorts[i] + " " + invWire + "\n";
+                    prelude += "0 1\n";
+                }
+            }
+
+            if (recipe.outputNegation) {
+                const std::string invOutWire = "inv_out" + localSuffix;
+                epilogue += ".names " + invOutWire + " " + realOutNet + "\n";
+                epilogue += "0 1\n";
+            }
+
             while (readLineSafe(ss, ln)) {
                 if (ln.empty()) continue;
                 if (ln[0] == '.' && ln.compare(0, 6, ".names") != 0) continue;
@@ -675,16 +708,19 @@ std::string fes::InnovusBatchEvaluator::rewriteBlifUnified(
                 }
                 processed += out + "\n";
             }
-            return processed;
+            return prelude + processed + epilogue;
         };
 
     // Unified score = totalSwitching + kOutputWeight * outputToggle
     //               + kGateWeight * max(1, gateCount)
-    //               + kActivityWeight * activityDistance.
+    //               + kActivityWeight * activityDistance
+    //               + totalNegationCount * kInverterPowerPenalty.
     // Zeroing the output/activity weights recovers the legacy PONO engine's
     // pure-switching formula.
     auto scoreCandidate =
-        [&](const LibEntry& cand, const std::vector<double>& inProbs)
+        [&](const LibEntry& cand,
+            const std::vector<double>& inProbs,
+            int negationCount)
             -> std::pair<FragmentPowerInfo, double> {
             FragmentPowerInfo fpi =
                 estimateFragmentSwitching(cand.blifContent, inProbs);
@@ -701,7 +737,9 @@ std::string fes::InnovusBatchEvaluator::rewriteBlifUnified(
             double score = fpi.totalSwitching
                          + cfg.kOutputWeight * fpi.outputToggle
                          + cfg.kGateWeight * std::max(1, fpi.gateCount)
-                         + cfg.kActivityWeight * activityDist;
+                         + cfg.kActivityWeight * activityDist
+                         + static_cast<double>(negationCount) *
+                               kInverterPowerPenalty;
             return {fpi, score};
         };
 
@@ -717,6 +755,7 @@ std::string fes::InnovusBatchEvaluator::rewriteBlifUnified(
     int rejectedByNoLib = 0;
     int rejectedByBadCand = 0;
     int rejectedByNoImprove = 0;
+    int rejectedByNegationPolicy = 0;
 
     while (true) {
         if (hasPending) {
@@ -785,11 +824,40 @@ std::string fes::InnovusBatchEvaluator::rewriteBlifUnified(
             continue;
         }
 
-        LutTruthTable hexVal = getHexValue(sop, (int)ports.size());
-        std::stringstream hss;
-        hss << std::uppercase << std::hex << std::setfill('0')
-            << std::setw(kLutTruthTableHexDigits) << hexVal;
-        std::string hexKey = hss.str();
+        LutTruthTable hexVal = getHexValue(sop, static_cast<int>(ports.size()));
+        std::string hexKey = truthTableHexKey(hexVal);
+        std::vector<std::string> matchedPorts = ports;
+        std::vector<double> matchedInputProbs = localInputProbs;
+        NpnRecipe emitRecipe;
+        emitRecipe.canonicalHex = hexVal;
+        emitRecipe.inputPermutation.resize(ports.size());
+        emitRecipe.inputNegations.assign(ports.size(), false);
+        for (size_t i = 0; i < ports.size(); ++i) {
+            emitRecipe.inputPermutation[i] = static_cast<int>(i);
+        }
+        emitRecipe.outputNegation = false;
+        int recipeNegationCount = 0;
+
+        if (cfg.enableNpn) {
+            emitRecipe = NpnCanonizer::computeCanonical(
+                hexVal, static_cast<int>(ports.size()));
+            recipeNegationCount = emitRecipe.totalNegationCount();
+            hexKey = truthTableHexKey(emitRecipe.canonicalHex);
+
+            matchedPorts.resize(ports.size());
+            matchedInputProbs.resize(localInputProbs.size());
+            for (size_t canonicalInput = 0; canonicalInput < ports.size();
+                 ++canonicalInput) {
+                const int realInput = emitRecipe.inputPermutation[canonicalInput];
+                matchedPorts[canonicalInput] = ports[realInput];
+
+                double prob = localInputProbs[realInput];
+                if (emitRecipe.inputNegations[canonicalInput]) {
+                    prob = 1.0 - prob;
+                }
+                matchedInputProbs[canonicalInput] = prob;
+            }
+        }
 
         auto libIt = targetLib.find(hexKey);
         if (libIt == targetLib.end()) {
@@ -798,6 +866,14 @@ std::string fes::InnovusBatchEvaluator::rewriteBlifUnified(
             continue;
         }
         const auto& candidates = libIt->second;
+
+        if (cfg.enableNpn &&
+            recipeNegationCount > 0 &&
+            !cfg.allowNegation) {
+            rejectedByNegationPolicy++;
+            writeOriginal();
+            continue;
+        }
 
         // Score the incumbent LUT for the optional improvement filter.
         const double origToggle = 2.0 * outProb * (1.0 - outProb);
@@ -809,6 +885,8 @@ std::string fes::InnovusBatchEvaluator::rewriteBlifUnified(
             int candIdx = -1;
             double score = std::numeric_limits<double>::infinity();
             int gateCount = std::numeric_limits<int>::max();
+            int negationCount = 0;
+            NpnRecipe recipe;
             std::string processedFragment;
         };
 
@@ -826,7 +904,8 @@ std::string fes::InnovusBatchEvaluator::rewriteBlifUnified(
             if (libOutputs.size() != 1) continue;
             if (fragmentGates <= 0) continue;
 
-            auto [fpi, score] = scoreCandidate(cand, localInputProbs);
+            auto [fpi, score] = scoreCandidate(
+                cand, matchedInputProbs, recipeNegationCount);
 
             if (cfg.useImprovementFilter &&
                 !(score + 1e-12 < origScore * (1.0 - cfg.kImproveMargin))) {
@@ -842,14 +921,29 @@ std::string fes::InnovusBatchEvaluator::rewriteBlifUnified(
             }
 
             if (better) {
-                auto portMap = buildPortMap(libInputs, libOutputs, ports,
-                                            outNet);
                 std::string localSuffix = "_v" + std::to_string(instanceId);
+                std::vector<std::string> emittedInputNets = matchedPorts;
+                for (size_t i = 0; i < emittedInputNets.size(); ++i) {
+                    if (!emitRecipe.inputNegations.empty() &&
+                        emitRecipe.inputNegations[i]) {
+                        emittedInputNets[i] =
+                            "inv_in_" + std::to_string(i) + localSuffix;
+                    }
+                }
+                const std::string emittedOutNet =
+                    emitRecipe.outputNegation
+                        ? "inv_out" + localSuffix
+                        : outNet;
+                auto portMap = buildPortMap(libInputs, libOutputs,
+                                            emittedInputNets, emittedOutNet);
                 best.candIdx = ci;
                 best.score = score;
                 best.gateCount = fragmentGates;
+                best.negationCount = recipeNegationCount;
+                best.recipe = emitRecipe;
                 best.processedFragment = remapFragmentForEmit(
-                    cand.blifContent, portMap, primaryIOs, localSuffix);
+                    cand.blifContent, portMap, primaryIOs, localSuffix,
+                    emitRecipe, matchedPorts, outNet);
             }
         }
 
@@ -863,7 +957,8 @@ std::string fes::InnovusBatchEvaluator::rewriteBlifUnified(
         replacedCount++;
         instanceId++;
         ofs << "# " << cfg.tag << " LUT-Replace [" << hexKey
-            << "] Score=" << std::scientific << std::setprecision(8)
+            << "] Negations=" << best.negationCount
+            << " Score=" << std::scientific << std::setprecision(8)
             << best.score << "\n";
         ofs << best.processedFragment;
     }
@@ -876,6 +971,9 @@ std::string fes::InnovusBatchEvaluator::rewriteBlifUnified(
               << ", Replaced=" << replacedCount
               << ", RejNoLib=" << rejectedByNoLib
               << ", RejBadCand=" << rejectedByBadCand;
+    if (cfg.enableNpn && !cfg.allowNegation) {
+        std::cout << ", RejNegationPolicy=" << rejectedByNegationPolicy;
+    }
     if (cfg.useImprovementFilter) {
         std::cout << ", RejNoImprove=" << rejectedByNoImprove;
     }
@@ -1439,6 +1537,8 @@ std::string fes::InnovusBatchEvaluator::rewriteMappedBlifWithGivenLibrarySimple(
     cfg.kGateWeight          = 0.10;
     cfg.kOutputWeight        = 0.35;
     cfg.kActivityWeight      = 0.08;
+    cfg.enableNpn           = false;
+    cfg.allowNegation       = false;
     cfg.useImprovementFilter = true;
     cfg.kImproveMargin       = 0.01;
     cfg.cleanupAbcSeq        = "strash; dc2; balance; if -K " + abcLutK() +

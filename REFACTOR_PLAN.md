@@ -16,10 +16,12 @@
 - [x] Refactor `InnovusBatchEvaluator`: Analyze the two redundant logic rewriting paths, merge them, and retain a single, clean interface aligned with the core pipeline.
 - [x] Eradicate magic numbers: Refactor the hardcoded gate input limits (e.g., `4`) into configuration constants or templates to easily support scalable inputs (like 6-input generation).
 
-## Stage 3: Algorithm Performance Optimization
-- [ ] Implement an NPN (Negation-Permutation-Negation) equivalence class judgment module to filter out redundant functions before SMT solving.
-- [ ] Introduce multi-threading (via `std::thread` or OpenMP) to parallelize the sub-circuit library generation.
-- [ ] Ensure thread safety (e.g., using `std::mutex` or lock-free structures) when threads write to the shared library database.
+## Stage 3: Algorithm Performance Optimization & NPN Equivalence
+- [ ] Implement an NPN (Negation-Permutation-Negation) equivalence class module (`NpnTransform.h/cpp`) for up to 6-input LUTs. It must calculate the exact transformation recipe (permutations and negations) and provide a `totalNegationCount()` for power penalty evaluation.
+- [ ] Integrate NPN into `InnovusBatchEvaluator`. Add `enableNpn` and `allowNegation` flags to `RewriteConfig`.
+  - **Path 1 (Our Custom Engine):** Enable NPN and set `allowNegation = true`. The `scoreCandidate` function must penalize candidates based on `totalNegationCount() * kInverterPowerPenalty`. Only accept if the net score is strictly better than the original.
+  - **Path 2 (Baseline PONO/ABC Compare):** Disable NPN (or restrict to exact match / pure P-equivalence with `allowNegation = false`) to ensure a completely fair, 1:1 comparison with the original paper's methodology.
+- [ ] Introduce multi-threading (e.g., `std::thread` or OpenMP) to parallelize the sub-circuit evaluation loops, ensuring thread-safety (e.g., using `std::mutex`) for shared structures.
 
 ## Stage 4: Industrial Library Parsing & Decoupling
 - [ ] Develop a parser module to read 45nm standard cell libraries (e.g., Liberty `.lib` format).

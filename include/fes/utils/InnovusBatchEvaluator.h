@@ -154,6 +154,12 @@ private:
         double kOutputWeight   = 0.0;
         double kActivityWeight = 0.0;
 
+        // NPN matching controls. When enabled, the current cut is
+        // canonicalized before library lookup; allowNegation gates whether
+        // recipes that require explicit inverters are admissible.
+        bool enableNpn = false;
+        bool allowNegation = false;
+
         // When true, candidates must beat the original LUT's toggle-based
         // score by (1 - kImproveMargin). When false, any feasible
         // candidate wins -- matches the legacy PONO aggressive/conservative
