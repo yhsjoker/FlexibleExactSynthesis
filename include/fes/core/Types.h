@@ -1,9 +1,32 @@
 #ifndef FES_CORE_TYPES_H
 #define FES_CORE_TYPES_H
 
+#include <cstdint>
 #include <iostream>
 
 namespace fes {
+
+    // ----------------------------------------------------------------------
+    // LUT configuration. The rewriter, library loader, benchmark extractor,
+    // and ABC pre-map flows all derive from this single constant. Switching
+    // the project to 6-input LUTs is a one-line change (set kLutMaxInputs=6).
+    // LutTruthTable is 64 bits wide so the truth-table bitmap stays
+    // overflow-safe for K up to 6 (2^6 = 64 rows).
+    // ----------------------------------------------------------------------
+    constexpr int kLutMaxInputs          = 4;
+    constexpr int kLutTruthTableRows     = 1 << kLutMaxInputs;          // 2^K
+    constexpr int kLutTruthTableHexDigits =
+        (kLutTruthTableRows + 3) / 4;                                   // nibbles
+
+    using LutTruthTable = std::uint64_t;
+
+    // Truth-table "all ones" mask, sized to exactly kLutTruthTableRows bits.
+    // Written as a function so the shift is well-defined even if a future
+    // tuning raises K to the full width of LutTruthTable.
+    constexpr LutTruthTable kLutTruthTableAllOnes =
+        (kLutTruthTableRows >= 64)
+            ? ~LutTruthTable{0}
+            : ((LutTruthTable{1} << kLutTruthTableRows) - 1);
 
     // 变量索引类型
     using VarIndex = int;

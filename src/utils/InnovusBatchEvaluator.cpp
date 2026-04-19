@@ -1,4 +1,5 @@
 #include "fes/utils/InnovusBatchEvaluator.h"
+#include "fes/core/Types.h"
 #include <fstream>
 #include <iostream>
 #include <filesystem>
@@ -15,8 +16,15 @@
 
 namespace fes {
 
-InnovusBatchEvaluator::InnovusBatchEvaluator(const std::string& lib, const std::string& py, const std::string& abc) 
+// ABC "-K <n> -a" fragment, parameterized by the project-wide LUT constant.
+// Used for every `if -K <n> -a` command string we shell out to.
+static inline std::string abcLutK() {
+    return std::to_string(kLutMaxInputs);
+}
+
+InnovusBatchEvaluator::InnovusBatchEvaluator(const std::string& lib, const std::string& py, const std::string& abc)
     : libPath_(lib), verifier_(py), abcPath_(abc) {
+    cec_ = std::make_unique<EquivalenceChecker>(cecLibrary_);
     loadOptimizationLibrary();
 }
 
@@ -217,7 +225,8 @@ void InnovusBatchEvaluator::loadOptimizationLibrary() {
                         ideals.push_back(std::stod(token) / 100.0);
                     }
                 }
-                while(ideals.size() < 4) ideals.push_back(0.5); 
+                while (ideals.size() < static_cast<size_t>(kLutMaxInputs))
+                    ideals.push_back(0.5);
                 entry.idealActivities = ideals;
 
                 hexMappingLib_[hexFunc].push_back(entry);
@@ -229,17 +238,24 @@ void InnovusBatchEvaluator::loadOptimizationLibrary() {
 
 std::string InnovusBatchEvaluator::runABCExhaustiveOpt(const std::string& inputBlif) {
     namespace fs = std::filesystem;
+    
+    // 【修复点】：在执行之前确保 tmp_eval 目录存在
+    fs::path workDir = fs::current_path() / "tmp_eval";
+    if (!fs::exists(workDir)) fs::create_directories(workDir);
+
     std::string baseName = fs::path(inputBlif).stem().string();
-    std::string outPath = (fs::current_path() / "tmp_eval" / (baseName + "_abc_high.blif")).string();
+    std::string outPath = (workDir / (baseName + "_abc_high.blif")).string();
 
     // 弃用会造成面积膨胀的 balance，改用面积严格驱动的 strash + dc2 + resyn2a 组合
-    std::string highOptSeq = "strash; dc2; resyn2a; if -K 4 -a";
-    std::string abcCmd = abcPath_ + " -c \"read_blif " + inputBlif + 
+    std::string highOptSeq = "strash; dc2; balance; rewrite; balance; rewrite; "
+                             "rewrite -z; balance; rewrite -z; balance; "
+                             "if -K " + abcLutK() + " -a";
+    std::string abcCmd = abcPath_ + " -c \"read_blif " + inputBlif +
                          "; " + highOptSeq + "; write_blif " + outPath + "\" > tmp_eval/abc_baseline.log 2>&1";
 
     int ret = system(abcCmd.c_str());
     if (ret != 0 || !fs::exists(outPath)) return "";
-    return outPath;
+    return verifyRewriteOrRevert(inputBlif, outPath, "ABC_exhaustive");
 }
 
 bool readLineSafe(std::ifstream& ifs, std::string& outLine) {
@@ -276,35 +292,37 @@ bool readLineSafe(std::istream& is, std::string& outLine) {
     return true;
 }
 
-// =====================================================================
-// 💡 修复点 1：彻底修复真值表对齐问题，强制展开为 16 位以兼容 4-cut 库
-// =====================================================================
-uint16_t getHexValue(const std::vector<std::string>& sop, int numInputs) {
+// Compute the canonical K-input truth table (LSB = minterm 0). The truth
+// table width, row count, and cover-mask are all derived from
+// kLutMaxInputs, so scaling to 6-input LUTs requires no changes here.
+LutTruthTable getHexValue(const std::vector<std::string>& sop, int numInputs) {
     if (sop.empty()) return 0;
     std::stringstream ss(sop[0]);
     std::string firstCube, firstOut;
     ss >> firstCube >> firstOut;
     bool isCover0 = (firstOut == "0");
 
-    uint16_t truthTable = isCover0 ? 0xFFFF : 0x0000;
+    LutTruthTable truthTable = isCover0 ? kLutTruthTableAllOnes : LutTruthTable{0};
 
+    const int rows = 1 << numInputs;   // 2^numInputs, clamped by the caller
     for (const auto& row : sop) {
         std::stringstream rss(row);
         std::string cube, out;
         if (!(rss >> cube >> out)) continue;
 
-        for (int i = 0; i < 16; ++i) { 
+        for (int i = 0; i < rows; ++i) {
             bool match = true;
             for (int j = 0; j < numInputs; ++j) {
                 if (cube[j] == '-') continue;
-                bool bitValue = (i >> j) & 1;
+                bool bitValue = ((i >> j) & 1) != 0;
                 if ((cube[j] == '1' && !bitValue) || (cube[j] == '0' && bitValue)) {
                     match = false; break;
                 }
             }
             if (match) {
-                if (isCover0) truthTable &= ~(1 << i); 
-                else truthTable |= (1 << i);          
+                const LutTruthTable bit = LutTruthTable{1} << i;
+                if (isCover0) truthTable &= ~bit;
+                else          truthTable |= bit;
             }
         }
     }
@@ -482,56 +500,85 @@ FragmentPowerInfo estimateFragmentSwitching(
 }
 
 // ============================================================================
-// 核心函数: rewriteBlifWithLibrary
-// 简化版流程：
-//   1) 只做 4-LUT mapping
-//   2) 每个 LUT 计算输入概率
-//   3) 在同 truth table 库中直接挑选估计开关最小的实现
-//   4) 不再和“原始 1 个抽象 LUT 门”比较
-//   5) 不做输入排列搜索（避免功能错误）
+// Legacy PONO aggressive/conservative engine.
+// Thin adapter over rewriteBlifUnified: enables the internal LUT4 pre-map,
+// drops the improvement threshold, and tunes the gate-weight knob.
 // ============================================================================
 std::string fes::InnovusBatchEvaluator::rewriteBlifWithLibrary(
     const std::string& originalBlifPath,
     const std::vector<double>& actualProbs,
     bool isAggressive)
 {
+    RewriteConfig cfg;
+    cfg.preMapAbcSeq         = "strash; if -K " + abcLutK() + " -a";
+    cfg.kGateWeight          = isAggressive ? 0.002 : 0.005;
+    cfg.kOutputWeight        = 0.0;
+    cfg.kActivityWeight      = 0.0;
+    cfg.useImprovementFilter = false;
+    cfg.cleanupAbcSeq        = "sweep; topo";
+    cfg.tag                  = isAggressive ? "PONO_agg" : "PONO_cons";
+    return rewriteBlifUnified(originalBlifPath, actualProbs,
+                              hexMappingLib_, cfg);
+}
+
+// ============================================================================
+// Shared rewrite core (unified from rewriteBlifWithLibrary and
+// rewriteMappedBlifWithGivenLibrarySimple). Every experimental engine --
+// PONO aggressive/conservative, ABC-local, PONO-local -- reaches this
+// routine; the RewriteConfig struct captures everything they historically
+// disagreed about (pre-mapping, scoring weights, improvement threshold,
+// final ABC cleanup pass, log tag).
+// ============================================================================
+std::string fes::InnovusBatchEvaluator::rewriteBlifUnified(
+    const std::string& inputBlifPath,
+    const std::vector<double>& actualProbs,
+    const std::map<std::string, std::vector<LibEntry>>& targetLib,
+    const RewriteConfig& cfgIn)
+{
+    const RewriteConfig cfg = cfgIn;
     namespace fs = std::filesystem;
 
     fs::path workDir = fs::current_path() / "tmp_eval";
     if (!fs::exists(workDir)) fs::create_directories(workDir);
 
-    std::string baseName   = fs::path(originalBlifPath).stem().string();
-    std::string suffixStr  = isAggressive ? "_agg" : "_cons";
-    std::string mappedBlif = (workDir / (baseName + "_lut4" + suffixStr + ".blif")).string();
-    std::string optBlif    = (workDir / (baseName + "_opt"  + suffixStr + ".blif")).string();
-    std::string cleanBlif  = (workDir / (baseName + "_clean"+ suffixStr + ".blif")).string();
+    const std::string baseName = fs::path(inputBlifPath).stem().string();
+    const std::string suffix   = "_" + cfg.tag;
+    const std::string mappedBlif =
+        (workDir / (baseName + "_lut4" + suffix + ".blif")).string();
+    const std::string optBlif =
+        (workDir / (baseName + "_opt" + suffix + ".blif")).string();
+    const std::string cleanBlif =
+        (workDir / (baseName + "_clean" + suffix + ".blif")).string();
 
-    // ------------------------------------------------------------------------
-    // 1) 只做纯 4-LUT mapping，不再加 resyn2/dc2 等强优化
-    // ------------------------------------------------------------------------
-    std::string mapSeq = "strash; if -K 4 -a";
-    std::string abcCmd = abcPath_ + " -c \"read_blif " + originalBlifPath +
-                         "; " + mapSeq +
-                         "; write_blif " + mappedBlif + "\" > /dev/null 2>&1";
-
-    if (system(abcCmd.c_str()) != 0 || !fs::exists(mappedBlif)) {
-        std::cerr << "[Rewriter] " << baseName << " (" << suffixStr
-                  << "): mapping failed, fallback to original.\n";
-        return originalBlifPath;
+    // Pre-mapping step: legacy PONO engines run `strash; if -K 4 -a` here;
+    // the mapped-origin flows pass an already-mapped BLIF and set
+    // preMapAbcSeq = "" to skip this.
+    std::string workingBlif;
+    if (cfg.preMapAbcSeq.empty()) {
+        workingBlif = inputBlifPath;
+    } else {
+        std::string cmd = abcPath_ + " -c \"read_blif " + inputBlifPath +
+                          "; " + cfg.preMapAbcSeq +
+                          "; write_blif " + mappedBlif +
+                          "\" > /dev/null 2>&1";
+        if (system(cmd.c_str()) != 0 || !fs::exists(mappedBlif)) {
+            std::cerr << "[Rewriter][" << cfg.tag << "] " << baseName
+                      << ": pre-mapping failed, fallback to input.\n";
+            return inputBlifPath;
+        }
+        workingBlif = mappedBlif;
     }
 
-    // ------------------------------------------------------------------------
-    // 2) 解析 primary IO
-    // ------------------------------------------------------------------------
+    // Collect primary IO names; used both to seed signal probabilities and
+    // to keep fragment outputs from clashing with PI/PO nets.
     std::set<std::string> primaryIOs;
     std::vector<std::string> orderedInputs;
-
     {
-        std::ifstream fin(mappedBlif);
-        std::string line;
-        while (readLineSafe(fin, line)) {
-            if (line.compare(0, 7, ".inputs") == 0) {
-                std::stringstream ss(line.substr(7));
+        std::ifstream fin(workingBlif);
+        std::string ln;
+        while (readLineSafe(fin, ln)) {
+            if (ln.compare(0, 7, ".inputs") == 0) {
+                std::stringstream ss(ln.substr(7));
                 std::string io;
                 while (ss >> io) {
                     if (io != "\\" && !io.empty()) {
@@ -539,13 +586,11 @@ std::string fes::InnovusBatchEvaluator::rewriteBlifWithLibrary(
                         orderedInputs.push_back(io);
                     }
                 }
-            } else if (line.compare(0, 8, ".outputs") == 0) {
-                std::stringstream ss(line.substr(8));
+            } else if (ln.compare(0, 8, ".outputs") == 0) {
+                std::stringstream ss(ln.substr(8));
                 std::string io;
                 while (ss >> io) {
-                    if (io != "\\" && !io.empty()) {
-                        primaryIOs.insert(io);
-                    }
+                    if (io != "\\" && !io.empty()) primaryIOs.insert(io);
                 }
             }
         }
@@ -553,120 +598,114 @@ std::string fes::InnovusBatchEvaluator::rewriteBlifWithLibrary(
 
     std::map<std::string, double> signalProbs;
     for (size_t i = 0; i < orderedInputs.size(); ++i) {
-        signalProbs[orderedInputs[i]] = (i < actualProbs.size()) ? actualProbs[i] : 0.5;
+        signalProbs[orderedInputs[i]] =
+            (i < actualProbs.size()) ? actualProbs[i] : 0.5;
     }
 
-    // 候选评分：内部总翻转 + 极轻微门数偏置
-    // aggressive 时更偏向翻转；conservative 时稍微多考虑门数
-    const double kGateWeight = isAggressive ? 0.002 : 0.005;
-
-    // ------------------------------------------------------------------------
-    // 3) 辅助 lambda
-    // ------------------------------------------------------------------------
     auto parseFragmentIO =
         [&](const std::string& fragment,
             std::vector<std::string>& libInputs,
             std::vector<std::string>& libOutputs,
-            int& gateCount)
-    {
-        libInputs.clear();
-        libOutputs.clear();
-        gateCount = 0;
-
-        std::stringstream ss(fragment);
-        std::string line;
-        while (std::getline(ss, line)) {
-            if (line.compare(0, 7, ".inputs") == 0) {
-                std::stringstream si(line.substr(7));
-                std::string p;
-                while (si >> p) {
-                    if (p != "\\" && !p.empty()) libInputs.push_back(p);
+            int& gateCount) {
+            libInputs.clear();
+            libOutputs.clear();
+            gateCount = 0;
+            std::stringstream ss(fragment);
+            std::string ln;
+            while (readLineSafe(ss, ln)) {
+                if (ln.compare(0, 7, ".inputs") == 0) {
+                    std::stringstream si(ln.substr(7));
+                    std::string p;
+                    while (si >> p) {
+                        if (p != "\\" && !p.empty()) libInputs.push_back(p);
+                    }
+                } else if (ln.compare(0, 8, ".outputs") == 0) {
+                    std::stringstream so(ln.substr(8));
+                    std::string p;
+                    while (so >> p) {
+                        if (p != "\\" && !p.empty()) libOutputs.push_back(p);
+                    }
+                } else if (ln.compare(0, 6, ".names") == 0) {
+                    gateCount++;
                 }
-            } else if (line.compare(0, 8, ".outputs") == 0) {
-                std::stringstream so(line.substr(8));
-                std::string p;
-                while (so >> p) {
-                    if (p != "\\" && !p.empty()) libOutputs.push_back(p);
-                }
-            } else if (line.compare(0, 6, ".names") == 0) {
-                gateCount++;
             }
-        }
-    };
+        };
 
     auto buildPortMap =
         [&](const std::vector<std::string>& libInputs,
             const std::vector<std::string>& libOutputs,
             const std::vector<std::string>& realPorts,
-            const std::string& outNet) -> std::unordered_map<std::string, std::string>
-    {
-        std::unordered_map<std::string, std::string> portMap;
-        for (size_t i = 0; i < libInputs.size() && i < realPorts.size(); ++i) {
-            portMap[libInputs[i]] = realPorts[i];
-        }
-        for (const auto& o : libOutputs) {
-            portMap[o] = outNet;
-        }
-        return portMap;
-    };
+            const std::string& outNet)
+            -> std::unordered_map<std::string, std::string> {
+            std::unordered_map<std::string, std::string> portMap;
+            for (size_t i = 0; i < libInputs.size() && i < realPorts.size();
+                 ++i) {
+                portMap[libInputs[i]] = realPorts[i];
+            }
+            for (const auto& o : libOutputs) portMap[o] = outNet;
+            return portMap;
+        };
 
     auto remapFragmentForEmit =
         [&](const std::string& fragment,
             const std::unordered_map<std::string, std::string>& portMap,
-            const std::set<std::string>& primaryIOs,
-            const std::string& suffix) -> std::string
-    {
-        std::stringstream ss(fragment);
-        std::string line;
-        std::string processed;
-
-        while (std::getline(ss, line)) {
-            if (line.empty()) continue;
-
-            // 只保留 .names 和 cube 行
-            if (line[0] == '.' && line.compare(0, 6, ".names") != 0) continue;
-
-            bool isNamesLine = (line.compare(0, 6, ".names") == 0);
-            std::stringstream ls(line);
-            std::string word;
-            std::string finalLine;
-            bool firstWord = true;
-
-            while (ls >> word) {
-                if (isNamesLine && !firstWord) {
-                    auto it = portMap.find(word);
-                    if (it != portMap.end()) {
-                        finalLine += it->second + " ";
-                    } else if (primaryIOs.count(word)) {
-                        finalLine += word + " ";
+            const std::set<std::string>& pioSet,
+            const std::string& localSuffix) -> std::string {
+            std::stringstream ss(fragment);
+            std::string ln;
+            std::string processed;
+            while (readLineSafe(ss, ln)) {
+                if (ln.empty()) continue;
+                if (ln[0] == '.' && ln.compare(0, 6, ".names") != 0) continue;
+                bool isNamesLine = (ln.compare(0, 6, ".names") == 0);
+                std::stringstream ls(ln);
+                std::string word;
+                std::string out;
+                bool first = true;
+                while (ls >> word) {
+                    if (isNamesLine && !first) {
+                        auto it = portMap.find(word);
+                        if (it != portMap.end()) out += it->second + " ";
+                        else if (pioSet.count(word)) out += word + " ";
+                        else out += word + localSuffix + " ";
                     } else {
-                        finalLine += word + suffix + " ";
+                        out += word + " ";
                     }
-                } else {
-                    finalLine += word + " ";
+                    first = false;
                 }
-                firstWord = false;
+                processed += out + "\n";
             }
+            return processed;
+        };
 
-            processed += finalLine + "\n";
-        }
-
-        return processed;
-    };
-
+    // Unified score = totalSwitching + kOutputWeight * outputToggle
+    //               + kGateWeight * max(1, gateCount)
+    //               + kActivityWeight * activityDistance.
+    // Zeroing the output/activity weights recovers the legacy PONO engine's
+    // pure-switching formula.
     auto scoreCandidate =
-        [&](const std::string& fragment,
-            const std::vector<double>& inputProbsForDeclaredOrder) -> std::pair<FragmentPowerInfo, double>
-    {
-        FragmentPowerInfo fpi = estimateFragmentSwitching(fragment, inputProbsForDeclaredOrder);
-        double score = fpi.totalSwitching + kGateWeight * std::max(1, fpi.gateCount);
-        return {fpi, score};
-    };
+        [&](const LibEntry& cand, const std::vector<double>& inProbs)
+            -> std::pair<FragmentPowerInfo, double> {
+            FragmentPowerInfo fpi =
+                estimateFragmentSwitching(cand.blifContent, inProbs);
+            double activityDist = 0.0;
+            size_t activityN = std::min(cand.idealActivities.size(),
+                                        inProbs.size());
+            if (activityN > 0) {
+                for (size_t i = 0; i < activityN; ++i) {
+                    activityDist += std::abs(
+                        cand.idealActivities[i] - inProbs[i]);
+                }
+                activityDist /= static_cast<double>(activityN);
+            }
+            double score = fpi.totalSwitching
+                         + cfg.kOutputWeight * fpi.outputToggle
+                         + cfg.kGateWeight * std::max(1, fpi.gateCount)
+                         + cfg.kActivityWeight * activityDist;
+            return {fpi, score};
+        };
 
-    // ------------------------------------------------------------------------
-    // 4) 主重写循环
-    // ------------------------------------------------------------------------
-    std::ifstream ifs(mappedBlif);
+    std::ifstream ifs(workingBlif);
     std::ofstream ofs(optBlif);
 
     std::string line, pendingLine;
@@ -677,6 +716,7 @@ std::string fes::InnovusBatchEvaluator::rewriteBlifWithLibrary(
     int replacedCount = 0;
     int rejectedByNoLib = 0;
     int rejectedByBadCand = 0;
+    int rejectedByNoImprove = 0;
 
     while (true) {
         if (hasPending) {
@@ -694,9 +734,9 @@ std::string fes::InnovusBatchEvaluator::rewriteBlifWithLibrary(
         totalNamesCount++;
 
         std::stringstream ss(line);
-        std::string tag, tok;
+        std::string tagWord, tok;
         std::vector<std::string> ports;
-        ss >> tag;
+        ss >> tagWord;
         while (ss >> tok) {
             if (tok != "\\") ports.push_back(tok);
         }
@@ -726,36 +766,44 @@ std::string fes::InnovusBatchEvaluator::rewriteBlifWithLibrary(
             for (const auto& row : sop) ofs << row << "\n";
         };
 
-        // 用原 LUT 的 SOP 传播输出概率，供后续节点使用
         std::vector<double> localInputProbs;
         localInputProbs.reserve(ports.size());
         for (const auto& p : ports) {
-            localInputProbs.push_back(signalProbs.count(p) ? signalProbs[p] : 0.5);
+            localInputProbs.push_back(
+                signalProbs.count(p) ? signalProbs[p] : 0.5);
         }
 
         double outProb = computeSopOutputProb(sop, localInputProbs);
         outProb = std::clamp(outProb, 0.0, 1.0);
         signalProbs[outNet] = outProb;
 
-        // 只处理 <=4 输入 LUT；其余保持原样
-        if (ports.size() > 4) {
+        // LUTs wider than the library's K are rewritten only if the library
+        // itself spans that width. Gate-count is bounded by kLutMaxInputs.
+        if (ports.size() > static_cast<size_t>(kLutMaxInputs)) {
             rejectedByNoLib++;
             writeOriginal();
             continue;
         }
 
-        uint16_t hexVal = getHexValue(sop, (int)ports.size());
+        LutTruthTable hexVal = getHexValue(sop, (int)ports.size());
         std::stringstream hss;
-        hss << std::uppercase << std::hex << std::setfill('0') << std::setw(4) << hexVal;
+        hss << std::uppercase << std::hex << std::setfill('0')
+            << std::setw(kLutTruthTableHexDigits) << hexVal;
         std::string hexKey = hss.str();
 
-        if (!hexMappingLib_.count(hexKey)) {
+        auto libIt = targetLib.find(hexKey);
+        if (libIt == targetLib.end()) {
             rejectedByNoLib++;
             writeOriginal();
             continue;
         }
+        const auto& candidates = libIt->second;
 
-        const auto& candidates = hexMappingLib_.at(hexKey);
+        // Score the incumbent LUT for the optional improvement filter.
+        const double origToggle = 2.0 * outProb * (1.0 - outProb);
+        const double origScore = origToggle
+                               + cfg.kOutputWeight * origToggle
+                               + cfg.kGateWeight * 1.0;
 
         struct BestReplacement {
             int candIdx = -1;
@@ -771,15 +819,19 @@ std::string fes::InnovusBatchEvaluator::rewriteBlifWithLibrary(
 
             std::vector<std::string> libInputs, libOutputs;
             int fragmentGates = 0;
-            parseFragmentIO(cand.blifContent, libInputs, libOutputs, fragmentGates);
+            parseFragmentIO(cand.blifContent, libInputs, libOutputs,
+                            fragmentGates);
 
             if (libInputs.size() != ports.size()) continue;
             if (libOutputs.size() != 1) continue;
             if (fragmentGates <= 0) continue;
 
-            // 注意：这里不再做输入 permutation
-            // 否则可能改变逻辑功能
-            auto [fpi, score] = scoreCandidate(cand.blifContent, localInputProbs);
+            auto [fpi, score] = scoreCandidate(cand, localInputProbs);
+
+            if (cfg.useImprovementFilter &&
+                !(score + 1e-12 < origScore * (1.0 - cfg.kImproveMargin))) {
+                continue;
+            }
 
             bool better = false;
             if (score + 1e-12 < best.score) {
@@ -790,52 +842,57 @@ std::string fes::InnovusBatchEvaluator::rewriteBlifWithLibrary(
             }
 
             if (better) {
-                auto portMap = buildPortMap(libInputs, libOutputs, ports, outNet);
-                std::string suffix = "_v" + std::to_string(instanceId);
-                std::string processedFragment =
-                    remapFragmentForEmit(cand.blifContent, portMap, primaryIOs, suffix);
-
+                auto portMap = buildPortMap(libInputs, libOutputs, ports,
+                                            outNet);
+                std::string localSuffix = "_v" + std::to_string(instanceId);
                 best.candIdx = ci;
                 best.score = score;
                 best.gateCount = fragmentGates;
-                best.processedFragment = processedFragment;
+                best.processedFragment = remapFragmentForEmit(
+                    cand.blifContent, portMap, primaryIOs, localSuffix);
             }
         }
 
         if (best.candIdx < 0) {
-            rejectedByBadCand++;
+            if (cfg.useImprovementFilter) rejectedByNoImprove++;
+            else                          rejectedByBadCand++;
             writeOriginal();
             continue;
         }
 
         replacedCount++;
         instanceId++;
-        ofs << "# PONO LUT-Replace [" << hexKey << "] Score="
-            << std::scientific << std::setprecision(8) << best.score << "\n";
+        ofs << "# " << cfg.tag << " LUT-Replace [" << hexKey
+            << "] Score=" << std::scientific << std::setprecision(8)
+            << best.score << "\n";
         ofs << best.processedFragment;
     }
 
     ifs.close();
     ofs.close();
 
-    std::cout << "[Rewriter] " << baseName << " (" << suffixStr
-              << "): Total=" << totalNamesCount
+    std::cout << "[Rewriter][" << cfg.tag << "] " << baseName
+              << ": Total=" << totalNamesCount
               << ", Replaced=" << replacedCount
               << ", RejNoLib=" << rejectedByNoLib
-              << ", RejBadCand=" << rejectedByBadCand
-              << "\n";
-
-    // ------------------------------------------------------------------------
-    // 5) 只做轻量清理，避免把替换结果再次优化没了
-    // ------------------------------------------------------------------------
-    std::string sweepCmd = abcPath_ + " -c \"read_blif " + optBlif +
-                           "; sweep; topo; write_blif " + cleanBlif +
-                           "\" > /dev/null 2>&1";
-
-    if (system(sweepCmd.c_str()) == 0 && fs::exists(cleanBlif)) {
-        return cleanBlif;
+              << ", RejBadCand=" << rejectedByBadCand;
+    if (cfg.useImprovementFilter) {
+        std::cout << ", RejNoImprove=" << rejectedByNoImprove;
     }
-    return optBlif;
+    std::cout << "\n";
+
+    std::string resultPath = optBlif;
+    if (!cfg.cleanupAbcSeq.empty()) {
+        std::string cleanCmd = abcPath_ + " -c \"read_blif " + optBlif +
+                               "; " + cfg.cleanupAbcSeq +
+                               "; write_blif " + cleanBlif +
+                               "\" > /dev/null 2>&1";
+        if (system(cleanCmd.c_str()) == 0 && fs::exists(cleanBlif)) {
+            resultPath = cleanBlif;
+        }
+    }
+    return verifyRewriteOrRevert(inputBlifPath, resultPath,
+                                 cfg.tag + "_rewrite");
 }
 
 void InnovusBatchEvaluator::exportResultsToCsv(const std::vector<PPADiff>& results) {
@@ -980,8 +1037,98 @@ fes::InnovusBatchEvaluator::InnovusBatchEvaluator(
       abcLocalLibPath_(abcLocalLib),
       abcPath_(abc),
       verifier_(py) {
+    cec_ = std::make_unique<EquivalenceChecker>(cecLibrary_);
     loadOptimizationLibrary();
     loadABCOptimizationLibrary();
+}
+
+std::string fes::InnovusBatchEvaluator::verifyRewriteOrRevert(
+    const std::string& inputPath,
+    const std::string& rewrittenPath,
+    const std::string& tag)
+{
+    namespace fs = std::filesystem;
+    if (!verifyEnabled_) return rewrittenPath;
+    if (rewrittenPath.empty() || !fs::exists(rewrittenPath)) {
+        return rewrittenPath;
+    }
+    if (inputPath.empty() || !fs::exists(inputPath)) {
+        // Without a known-good reference we can't verify; pass through.
+        return rewrittenPath;
+    }
+
+    // Backend: ABC's native `cec`. The Z3 BLIF miter in EquivalenceChecker
+    // is fine for tiny sub-circuits but chokes on full designs (thousands
+    // of flat gates, netlists ABC emits in non-topological order). ABC's
+    // combinational equivalence checker handles ordering and scale
+    // transparently, so the rewrite pipeline delegates to it.
+    fs::path workDir = fs::current_path() / "tmp_eval";
+    if (!fs::exists(workDir)) fs::create_directories(workDir);
+
+    std::string stem = fs::path(rewrittenPath).stem().string();
+    std::string logPath =
+        (workDir / ("cec_" + tag + "_" + stem + ".log")).string();
+
+    std::string cmd = abcPath_ + " -q \"cec " + inputPath + " " +
+                      rewrittenPath + "\" > " + logPath + " 2>&1";
+    int ret = std::system(cmd.c_str());
+
+    // ABC returns 0 whether or not the two networks are equivalent, so
+    // rely on the log verdict. Expected verdicts are
+    // "Networks are equivalent" or "Networks are NOT EQUIVALENT".
+    // Anything else (UNDECIDED, crash, missing verdict) is treated as
+    // a verification failure so we never hand a suspect BLIF downstream.
+    bool equivalent = false;
+    bool haveVerdict = false;
+    std::string verdictLine;
+    std::ifstream logFile(logPath);
+    if (logFile.is_open()) {
+        std::string line;
+        while (std::getline(logFile, line)) {
+            if (line.find("Networks are equivalent") != std::string::npos) {
+                equivalent = true;
+                haveVerdict = true;
+                verdictLine = line;
+                break;
+            }
+            if (line.find("NOT EQUIVALENT") != std::string::npos ||
+                line.find("are NOT EQUAL") != std::string::npos ||
+                line.find("Networks are NOT") != std::string::npos) {
+                equivalent = false;
+                haveVerdict = true;
+                verdictLine = line;
+                break;
+            }
+            if (line.find("UNDECIDED") != std::string::npos) {
+                equivalent = false;
+                haveVerdict = true;
+                verdictLine = line;
+                break;
+            }
+        }
+    }
+
+    if (!haveVerdict) {
+        std::cerr << "[CEC][Rewrite][" << tag << "] FAIL "
+                  << fs::path(rewrittenPath).filename().string()
+                  << " -> ABC cec produced no verdict (ret=" << ret
+                  << ", log: " << logPath
+                  << ") (reverting to input)" << std::endl;
+        return inputPath;
+    }
+
+    if (equivalent) {
+        std::cout << "[CEC][Rewrite][" << tag << "] OK "
+                  << fs::path(rewrittenPath).filename().string()
+                  << std::endl;
+        return rewrittenPath;
+    }
+
+    std::cerr << "[CEC][Rewrite][" << tag << "] FAIL "
+              << fs::path(rewrittenPath).filename().string()
+              << " -> " << verdictLine
+              << " (reverting to input)" << std::endl;
+    return inputPath;
 }
 
 void fes::InnovusBatchEvaluator::loadABCOptimizationLibrary() {
@@ -1048,7 +1195,8 @@ void fes::InnovusBatchEvaluator::loadABCOptimizationLibrary() {
                     }
                 }
 
-                while (ideals.size() < 4) ideals.push_back(0.5);
+                while (ideals.size() < static_cast<size_t>(kLutMaxInputs))
+                    ideals.push_back(0.5);
                 entry.idealActivities = ideals;
 
                 abcHexMappingLib_[hexFunc].push_back(entry);
@@ -1070,12 +1218,12 @@ std::string fes::InnovusBatchEvaluator::run4LutMappingOnly(const std::string& in
     std::string outPath  = (workDir / (baseName + "_mapped_k4.blif")).string();
 
     std::string cmd = abcPath_ + " -c \"read_blif " + inputBlif +
-                      "; strash; if -K 4 -a; write_blif " + outPath +
+                      "; strash; if -K " + abcLutK() + " -a; write_blif " + outPath +
                       "\" > tmp_eval/mapped_k4.log 2>&1";
 
     int ret = system(cmd.c_str());
     if (ret != 0 || !fs::exists(outPath)) return "";
-    return outPath;
+    return verifyRewriteOrRevert(inputBlif, outPath, "ABC_lut4_map");
 }
 
 std::string fes::InnovusBatchEvaluator::runABCGlobalStrongOnMapped(const std::string& mappedBlif) {
@@ -1093,7 +1241,7 @@ std::string fes::InnovusBatchEvaluator::runABCGlobalStrongOnMapped(const std::st
         "strash; "
         "dc2; "
         "balance; rewrite; balance; rewrite; rewrite -z; balance; rewrite -z; balance; "
-        "if -K 4 -a";
+        "if -K " + abcLutK() + " -a";
 
     std::string cmd = abcPath_ + " -c \"read_blif " + mappedBlif +
                       "; " + seq +
@@ -1108,7 +1256,7 @@ std::string fes::InnovusBatchEvaluator::runABCGlobalStrongOnMapped(const std::st
         return "";
     }
 
-    return outPath;
+    return verifyRewriteOrRevert(mappedBlif, outPath, "ABC_global_strong");
 }
 
 double fes::InnovusBatchEvaluator::computeSopOutputProb(
@@ -1275,326 +1423,28 @@ FragmentPowerInfo fes::InnovusBatchEvaluator::estimateFragmentSwitching(
     return info;
 }
 
+// ============================================================================
+// Thin adapter over rewriteBlifUnified: inputs are already LUT4-mapped, so we
+// skip the internal pre-mapping; enable the improvement filter and the heavy
+// ABC cleanup pass that the legacy mapped-origin flow relied on.
+// ============================================================================
 std::string fes::InnovusBatchEvaluator::rewriteMappedBlifWithGivenLibrarySimple(
     const std::string& mappedBlifPath,
     const std::vector<double>& actualProbs,
     const std::map<std::string, std::vector<LibEntry>>& targetLib,
     const std::string& tag)
 {
-    namespace fs = std::filesystem;
-
-    const double kGateWeight = 0.10;
-    const double kActivityWeight = 0.08;
-    const double kOutputWeight = 0.35;
-    const double kImproveMargin = 0.01;
-
-    fs::path workDir = fs::current_path() / "tmp_eval";
-    if (!fs::exists(workDir)) fs::create_directories(workDir);
-
-    std::string baseName  = fs::path(mappedBlifPath).stem().string();
-    std::string optBlif   = (workDir / (baseName + "_" + tag + "_local.blif")).string();
-    std::string cleanBlif = (workDir / (baseName + "_" + tag + "_local_clean.blif")).string();
-
-    std::set<std::string> primaryIOs;
-    std::vector<std::string> orderedInputs;
-
-    {
-        std::ifstream fin(mappedBlifPath);
-        std::string line;
-        while (readLineSafe(fin, line)) {
-            if (line.compare(0, 7, ".inputs") == 0) {
-                std::stringstream ss(line.substr(7));
-                std::string io;
-                while (ss >> io) {
-                    if (io != "\\" && !io.empty()) {
-                        primaryIOs.insert(io);
-                        orderedInputs.push_back(io);
-                    }
-                }
-            } else if (line.compare(0, 8, ".outputs") == 0) {
-                std::stringstream ss(line.substr(8));
-                std::string io;
-                while (ss >> io) {
-                    if (io != "\\" && !io.empty()) primaryIOs.insert(io);
-                }
-            }
-        }
-    }
-
-    std::map<std::string, double> signalProbs;
-    for (size_t i = 0; i < orderedInputs.size(); ++i) {
-        signalProbs[orderedInputs[i]] = (i < actualProbs.size()) ? actualProbs[i] : 0.5;
-    }
-
-    auto parseFragmentIO =
-        [&](const std::string& fragment,
-            std::vector<std::string>& libInputs,
-            std::vector<std::string>& libOutputs,
-            int& gateCount)
-    {
-        libInputs.clear();
-        libOutputs.clear();
-        gateCount = 0;
-
-        std::stringstream ss(fragment);
-        std::string line;
-        while (readLineSafe(ss, line)) {
-            if (line.compare(0, 7, ".inputs") == 0) {
-                std::stringstream si(line.substr(7));
-                std::string p;
-                while (si >> p) if (p != "\\" && !p.empty()) libInputs.push_back(p);
-            } else if (line.compare(0, 8, ".outputs") == 0) {
-                std::stringstream so(line.substr(8));
-                std::string p;
-                while (so >> p) if (p != "\\" && !p.empty()) libOutputs.push_back(p);
-            } else if (line.compare(0, 6, ".names") == 0) {
-                gateCount++;
-            }
-        }
-    };
-
-    auto buildPortMap =
-        [&](const std::vector<std::string>& libInputs,
-            const std::vector<std::string>& libOutputs,
-            const std::vector<std::string>& realPorts,
-            const std::string& outNet) -> std::unordered_map<std::string, std::string>
-    {
-        std::unordered_map<std::string, std::string> portMap;
-        for (size_t i = 0; i < libInputs.size() && i < realPorts.size(); ++i) {
-            portMap[libInputs[i]] = realPorts[i];
-        }
-        for (const auto& o : libOutputs) portMap[o] = outNet;
-        return portMap;
-    };
-
-    auto remapFragmentForEmit =
-        [&](const std::string& fragment,
-            const std::unordered_map<std::string, std::string>& portMap,
-            const std::set<std::string>& primaryIOs,
-            const std::string& suffix) -> std::string
-    {
-        std::stringstream ss(fragment);
-        std::string line;
-        std::string processed;
-
-        while (readLineSafe(ss, line)) {
-            if (line.empty()) continue;
-            if (line[0] == '.' && line.compare(0, 6, ".names") != 0) continue;
-
-            bool isNamesLine = (line.compare(0, 6, ".names") == 0);
-            std::stringstream ls(line);
-            std::string word;
-            std::string finalLine;
-            bool firstWord = true;
-
-            while (ls >> word) {
-                if (isNamesLine && !firstWord) {
-                    auto it = portMap.find(word);
-                    if (it != portMap.end()) finalLine += it->second + " ";
-                    else if (primaryIOs.count(word)) finalLine += word + " ";
-                    else finalLine += word + suffix + " ";
-                } else {
-                    finalLine += word + " ";
-                }
-                firstWord = false;
-            }
-            processed += finalLine + "\n";
-        }
-
-        return processed;
-    };
-
-    auto scoreCandidate =
-        [&](const LibEntry& cand, const std::vector<double>& inputProbs) -> std::pair<FragmentPowerInfo, double>
-    {
-        FragmentPowerInfo fpi = estimateFragmentSwitching(cand.blifContent, inputProbs);
-
-        double activityDist = 0.0;
-        size_t activityN = std::min(cand.idealActivities.size(), inputProbs.size());
-        if (activityN > 0) {
-            for (size_t i = 0; i < activityN; ++i) {
-                activityDist += std::abs(cand.idealActivities[i] - inputProbs[i]);
-            }
-            activityDist /= static_cast<double>(activityN);
-        }
-
-        double score = fpi.totalSwitching
-                     + kOutputWeight * fpi.outputToggle
-                     + kGateWeight * std::max(1, fpi.gateCount)
-                     + kActivityWeight * activityDist;
-        return {fpi, score};
-    };
-
-    std::ifstream ifs(mappedBlifPath);
-    std::ofstream ofs(optBlif);
-
-    std::string line, pendingLine;
-    bool hasPending = false;
-
-    int instanceId = 0;
-    int totalNamesCount = 0;
-    int replacedCount = 0;
-    int rejectedByNoLib = 0;
-    int rejectedByBadCand = 0;
-    int rejectedByNoImprove = 0;
-
-    while (true) {
-        if (hasPending) {
-            line = pendingLine;
-            hasPending = false;
-        } else {
-            if (!readLineSafe(ifs, line)) break;
-        }
-
-        if (line.compare(0, 6, ".names") != 0) {
-            ofs << line << "\n";
-            continue;
-        }
-
-        totalNamesCount++;
-
-        std::stringstream ss(line);
-        std::string tagWord, tok;
-        std::vector<std::string> ports;
-        ss >> tagWord;
-        while (ss >> tok) {
-            if (tok != "\\") ports.push_back(tok);
-        }
-
-        if (ports.empty()) {
-            ofs << line << "\n";
-            continue;
-        }
-
-        std::string outNet = ports.back();
-        ports.pop_back();
-
-        std::vector<std::string> sop;
-        while (readLineSafe(ifs, pendingLine)) {
-            if (pendingLine.empty()) continue;
-            if (pendingLine[0] == '.') {
-                hasPending = true;
-                break;
-            }
-            sop.push_back(pendingLine);
-        }
-
-        auto writeOriginal = [&]() {
-            ofs << ".names ";
-            for (const auto& p : ports) ofs << p << " ";
-            ofs << outNet << "\n";
-            for (const auto& row : sop) ofs << row << "\n";
-        };
-
-        std::vector<double> localInputProbs;
-        localInputProbs.reserve(ports.size());
-        for (const auto& p : ports) {
-            localInputProbs.push_back(signalProbs.count(p) ? signalProbs[p] : 0.5);
-        }
-
-        double outProb = computeSopOutputProb(sop, localInputProbs);
-        outProb = std::clamp(outProb, 0.0, 1.0);
-        signalProbs[outNet] = outProb;
-
-        double origToggle = 2.0 * outProb * (1.0 - outProb);
-        double origScore = origToggle + kOutputWeight * origToggle + kGateWeight * 1.0;
-
-        if (ports.empty() || ports.size() > 4) {
-            rejectedByNoLib++;
-            writeOriginal();
-            continue;
-        }
-
-        uint16_t hexVal = getHexValue(sop, (int)ports.size());
-        std::stringstream hss;
-        hss << std::uppercase << std::hex << std::setfill('0') << std::setw(4) << hexVal;
-        std::string hexKey = hss.str();
-
-        auto libIt = targetLib.find(hexKey);
-        if (libIt == targetLib.end()) {
-            rejectedByNoLib++;
-            writeOriginal();
-            continue;
-        }
-
-        const auto& candidates = libIt->second;
-
-        struct BestReplacement {
-            int candIdx = -1;
-            double score = std::numeric_limits<double>::infinity();
-            int gateCount = std::numeric_limits<int>::max();
-            std::string processedFragment;
-        };
-
-        BestReplacement best;
-
-        for (int ci = 0; ci < (int)candidates.size(); ++ci) {
-            const auto& cand = candidates[ci];
-
-            std::vector<std::string> libInputs, libOutputs;
-            int fragmentGates = 0;
-            parseFragmentIO(cand.blifContent, libInputs, libOutputs, fragmentGates);
-
-            if (libInputs.size() != ports.size()) continue;
-            if (libOutputs.size() != 1) continue;
-            if (fragmentGates <= 0) continue;
-
-            auto [fpi, score] = scoreCandidate(cand, localInputProbs);
-            if (!(score + 1e-12 < origScore * (1.0 - kImproveMargin))) {
-                continue;
-            }
-
-            bool better = false;
-            if (score + 1e-12 < best.score) {
-                better = true;
-            } else if (std::abs(score - best.score) < 1e-12 && fragmentGates < best.gateCount) {
-                better = true;
-            }
-
-            if (better) {
-                auto portMap = buildPortMap(libInputs, libOutputs, ports, outNet);
-                std::string suffix = "_v" + std::to_string(instanceId);
-                std::string processedFragment =
-                    remapFragmentForEmit(cand.blifContent, portMap, primaryIOs, suffix);
-
-                best.candIdx = ci;
-                best.score = score;
-                best.gateCount = fragmentGates;
-                best.processedFragment = processedFragment;
-            }
-        }
-
-        if (best.candIdx < 0) {
-            rejectedByNoImprove++;
-            writeOriginal();
-            continue;
-        }
-
-        replacedCount++;
-        instanceId++;
-        ofs << "# " << tag << " LUT-Replace [" << hexKey << "] Candidate=" << best.candIdx
-            << " OrigScore=" << std::fixed << std::setprecision(6) << origScore
-            << " NewScore=" << best.score << "\n";
-        ofs << best.processedFragment;
-    }
-
-    ifs.close();
-    ofs.close();
-
-    std::cout << "[" << tag << "-Rewriter] " << baseName
-              << ": Total=" << totalNamesCount
-              << ", Replaced=" << replacedCount
-              << ", RejNoLib=" << rejectedByNoLib
-              << ", RejBadCand=" << rejectedByBadCand
-              << ", RejNoImprove=" << rejectedByNoImprove
-              << "\n";
-
-    std::string cleanCmd = abcPath_ + " -c \"read_blif " + optBlif +
-                           "; strash; dc2; balance; if -K 4 -a; sweep; topo; write_blif " + cleanBlif +
-                           "\" > /dev/null 2>&1";
-
-    if (system(cleanCmd.c_str()) == 0 && fs::exists(cleanBlif)) return cleanBlif;
-    return optBlif;
+    RewriteConfig cfg;
+    cfg.preMapAbcSeq         = "";  // input is already LUT4-mapped
+    cfg.kGateWeight          = 0.10;
+    cfg.kOutputWeight        = 0.35;
+    cfg.kActivityWeight      = 0.08;
+    cfg.useImprovementFilter = true;
+    cfg.kImproveMargin       = 0.01;
+    cfg.cleanupAbcSeq        = "strash; dc2; balance; if -K " + abcLutK() +
+                               " -a; sweep; topo";
+    cfg.tag                  = tag;
+    return rewriteBlifUnified(mappedBlifPath, actualProbs, targetLib, cfg);
 }
 
 std::string fes::InnovusBatchEvaluator::rewriteMappedBlifWithABCLibrarySimple(

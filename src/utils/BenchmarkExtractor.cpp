@@ -76,7 +76,7 @@ void BenchmarkExtractor::processDirectory(const std::string& folderPath) {
             if (runAbcMapping(entry.path(), tempFilePath)) {
                 auto local_map = processMappedFile(tempFilePath);
 
-                std::vector<std::pair<uint16_t, int>> local_sorted(local_map.begin(), local_map.end());
+                std::vector<std::pair<LutTruthTable, int>> local_sorted(local_map.begin(), local_map.end());
                 std::sort(local_sorted.begin(), local_sorted.end(),
                     [](const auto& a, const auto& b) { return a.second > b.second; });
 
@@ -127,9 +127,9 @@ bool BenchmarkExtractor::runAbcMapping(const std::filesystem::path& inputFile,
     return std::filesystem::exists(outputFile);
 }
 
-std::map<uint16_t, int> BenchmarkExtractor::processMappedFile(
+std::map<LutTruthTable, int> BenchmarkExtractor::processMappedFile(
     const std::filesystem::path& filePath) {
-    std::map<uint16_t, int> local_freq;
+    std::map<LutTruthTable, int> local_freq;
     std::ifstream file(filePath);
     if (!file.is_open()) return local_freq;
 
@@ -139,8 +139,8 @@ std::map<uint16_t, int> BenchmarkExtractor::processMappedFile(
     std::vector<std::string> coverLines;
 
     auto flushGate = [&]() {
-        if (inGate && numInputs >= 0 && numInputs <= 4) {
-            uint16_t tt = computeTruthTable(numInputs, coverLines);
+        if (inGate && numInputs >= 0 && numInputs <= kLutMaxInputs) {
+            LutTruthTable tt = computeTruthTable(numInputs, coverLines);
             local_freq[tt]++;
         }
         inGate = false;
@@ -179,10 +179,10 @@ std::map<uint16_t, int> BenchmarkExtractor::processMappedFile(
     return local_freq;
 }
 
-uint16_t BenchmarkExtractor::computeTruthTable(
+LutTruthTable BenchmarkExtractor::computeTruthTable(
     int numInputs,
     const std::vector<std::string>& coverLines) {
-    if (numInputs < 0 || numInputs > 4) return 0;
+    if (numInputs < 0 || numInputs > kLutMaxInputs) return 0;
     if (coverLines.empty()) return 0;
 
     // 和 InnovusBatchEvaluator::getHexValue() 保持一致：
@@ -203,14 +203,15 @@ uint16_t BenchmarkExtractor::computeTruthTable(
 
     if (!foundFirstRow) return 0;
 
-    uint16_t truthTable = isCover0 ? 0xFFFF : 0x0000;
+    LutTruthTable truthTable = isCover0 ? kLutTruthTableAllOnes : LutTruthTable{0};
+    const int rows = 1 << numInputs;   // 2^numInputs, bounded by kLutMaxInputs
 
     for (const auto& row : coverLines) {
         std::stringstream rss(row);
         std::string cube, outVal;
         if (!(rss >> cube >> outVal)) continue;
 
-        for (int mask = 0; mask < 16; ++mask) {
+        for (int mask = 0; mask < rows; ++mask) {
             bool match = true;
             for (int j = 0; j < numInputs; ++j) {
                 if (j >= static_cast<int>(cube.size())) break;
@@ -225,8 +226,9 @@ uint16_t BenchmarkExtractor::computeTruthTable(
             }
 
             if (match) {
-                if (isCover0) truthTable &= ~(static_cast<uint16_t>(1u << mask));
-                else          truthTable |=  (static_cast<uint16_t>(1u << mask));
+                const LutTruthTable bit = LutTruthTable{1} << mask;
+                if (isCover0) truthTable &= ~bit;
+                else          truthTable |= bit;
             }
         }
     }
@@ -235,7 +237,7 @@ uint16_t BenchmarkExtractor::computeTruthTable(
 }
 
 void BenchmarkExtractor::exportTopHexFuncs(const std::string& outputPath, int topN) {
-    std::vector<std::pair<uint16_t, int>> sorted_funcs(
+    std::vector<std::pair<LutTruthTable, int>> sorted_funcs(
         frequency_map_.begin(), frequency_map_.end());
     std::sort(sorted_funcs.begin(), sorted_funcs.end(),
         [](const auto& a, const auto& b) {
@@ -249,7 +251,8 @@ void BenchmarkExtractor::exportTopHexFuncs(const std::string& outputPath, int to
 
     for (const auto& pair : sorted_funcs) {
         if (guaranteed_funcs_.count(pair.first)) {
-            outFile << std::hex << std::uppercase << std::setw(4)
+            outFile << std::hex << std::uppercase
+                    << std::setw(kLutTruthTableHexDigits)
                     << std::setfill('0') << pair.first;
             outFile << "," << std::dec << pair.second;
             outFile << "," << (count + 1) << "\n";
@@ -260,7 +263,8 @@ void BenchmarkExtractor::exportTopHexFuncs(const std::string& outputPath, int to
     for (const auto& pair : sorted_funcs) {
         if (count >= topN) break;
         if (!guaranteed_funcs_.count(pair.first)) {
-            outFile << std::hex << std::uppercase << std::setw(4)
+            outFile << std::hex << std::uppercase
+                    << std::setw(kLutTruthTableHexDigits)
                     << std::setfill('0') << pair.first;
             outFile << "," << std::dec << pair.second;
             outFile << "," << (count + 1) << "\n";

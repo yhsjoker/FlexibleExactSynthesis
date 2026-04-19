@@ -4,8 +4,8 @@
 #include "fes/solvers/KissatSolver.h"
 #include "fes/encoders/PatternEncoder.h"
 #include "fes/utils/BlifWriter.h"
+#include "fes/utils/EquivalenceChecker.h"
 #include "fes/core/Specification.h"
-#include "fes/solvers/OmtHeuristicSolver.h"
 
 #include <iostream>
 #include <fstream>
@@ -125,6 +125,18 @@ namespace fes {
         if (!optSuccess) {
             res.errorMsg = "Z3 Optimization Failed";
             return res;
+        }
+
+        if (verifyEnabled_) {
+            EquivalenceChecker cec(library_);
+            auto cecRes = cec.verifyAgainstHex(hexFunc, graph);
+            if (!cecRes.equivalent) {
+                std::cerr << "[CEC] FAIL " << hexFunc << probTag
+                          << " -> " << cecRes.message << std::endl;
+                res.errorMsg = "CEC: " + cecRes.message;
+                return res;
+            }
+            std::cout << "[CEC] OK " << hexFunc << probTag << std::endl;
         }
 
         res.ponoGates = minGates;

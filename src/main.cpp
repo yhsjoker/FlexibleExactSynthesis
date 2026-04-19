@@ -114,22 +114,25 @@ struct RunConfig {
     fs::path resourceDir;
     fs::path resultsRepoDir;
     fs::path outputDir;
-    
+
     // 外部工具与数据
     std::string abcPath;
     std::string benchmarkDir;
-    
+
     // 关键文件
     fs::path mcncGenlib;
     fs::path topFuncsCsv;       // 提取出的特征文件
     fs::path finalResultsCsv;   // 综合后的结果文件
     fs::path outLibPath;        // 生成的 .lib 文件
-    
-    fs::path abcLocalLibDir;          
-    fs::path abcLocalFinalResultsCsv; 
+
+    fs::path abcLocalLibDir;
+    fs::path abcLocalFinalResultsCsv;
 
     // 运行标识
     std::string runName;
+
+    // --verify: 启用 Z3 CEC 对 PONO 综合结果进行等价性校验
+    bool verify = false;
 };
 
 // [功能 1] 环境初始化与路径配置
@@ -166,9 +169,23 @@ RunConfig setupEnvironment(int argc, char** argv, bool isApiMode = false) {
     cfg.topFuncsCsv = cfg.resourceDir / "top_50_funcs.csv";
 
     // 4. 运行名称与输出目录
-    // 兼容原来的批处理逻辑，避开 "-c" 和 "-r" 等 API 参数
-    cfg.runName = (argc > 1 && std::string(argv[1]) != "-c" && std::string(argv[1]) != "-r") 
-                  ? argv[1] : ("run_" + getCurrentTimestamp()); 
+    // 兼容原来的批处理逻辑，避开 "-c"、"-r" 和 "--verify" 等控制参数
+    auto isReservedArg = [](const std::string& s) {
+        return s == "-c" || s == "-r" || s == "--verify";
+    };
+    cfg.runName = (argc > 1 && !isReservedArg(argv[1]))
+                  ? argv[1] : ("run_" + getCurrentTimestamp());
+
+    // --verify 可以出现在命令行任意位置
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--verify") {
+            cfg.verify = true;
+            break;
+        }
+    }
+    if (cfg.verify && !isApiMode) {
+        logOut << "[Config] CEC (Z3) verification ENABLED." << std::endl;
+    }
     
     cfg.outputDir = cfg.resultsRepoDir / cfg.runName;
     
@@ -228,12 +245,13 @@ void runPhase2_Synthesis(const RunConfig& cfg) {
     std::cout << "\n[Phase 2] Starting Synthesis Batch Run (Library Generation Mode)..." << std::endl;
 
     // 这里假设 createLibrary 是一个你可以调用的函数，或者你需要在这里实例化
-    auto lib = createLibrary(); 
+    auto lib = createLibrary();
     std::string pythonScript = (cfg.projectRoot / "scripts" / "single_power_run.py").string();
     fes::SynthesisFlow flow(lib, cfg.abcPath, cfg.mcncGenlib.string(), pythonScript);
-    
-    bool enablePhysicalEval = false; 
-    
+    flow.enableVerification(cfg.verify);
+
+    bool enablePhysicalEval = false;
+
     // 运行批量综合，传入开关参数
     flow.runBatch(cfg.topFuncsCsv.string(), cfg.finalResultsCsv.string(), cfg.outputDir.string(), enablePhysicalEval);
     
@@ -249,6 +267,7 @@ void runPhase2_ABC_Local_Library_Build(const RunConfig& cfg) {
 
     // 注意：这里第三个参数依然传 genlib 路径，和你原来的 SynthesisFlow 构造保持一致
     fes::SynthesisFlow flow(lib, cfg.abcPath, cfg.mcncGenlib.string(), pythonScript);
+    flow.enableVerification(cfg.verify);
 
     // 如果已经存在，可以选择跳过
     if (fs::exists(cfg.abcLocalFinalResultsCsv)) {
@@ -282,6 +301,7 @@ void runPhase3_Validation(const RunConfig& cfg) {
     // 2. 初始化批量评估器
     // 参数：优化库路径 (当前运行目录), Python 脚本路径, ABC 路径
     fes::InnovusBatchEvaluator evaluator(cfg.outputDir.string(), pythonScript, cfg.abcPath);
+    evaluator.enableVerification(cfg.verify);
 
     // 3. 执行批量验证
     // 它会递归扫描 cfg.benchmarkDir，重写电路，并对比 PPA
@@ -309,6 +329,7 @@ void runPhase3_MappedFourWayValidation(const RunConfig& cfg) {
         pythonScript,
         cfg.abcPath
     );
+    evaluator.enableVerification(cfg.verify);
 
     // 3. 执行新的四路批量验证
     evaluator.runBatchVerificationMappedFourWay(cfg.benchmarkDir);
@@ -347,6 +368,7 @@ int main(int argc, char** argv) {
             // 4. 初始化评估器并执行
             // 确保 cfg.outputDir 下有你之前 Phase 2 跑好的 detailed_infos 库
             fes::InnovusBatchEvaluator evaluator(cfg.outputDir.string(), pythonScript, cfg.abcPath);
+            evaluator.enableVerification(cfg.verify);
             SingleOptResult optResult = evaluator.optimizeSingleBlifFromContent(blifContent, probs);
 
             // 5. 【绝对关键】唯一输出 JSON，供 Java 后端抓取
@@ -362,10 +384,10 @@ int main(int argc, char** argv) {
         // ==========================================================
         RunConfig cfg = setupEnvironment(argc, argv, false); // false 表示允许打印普通日志
         // runPhase2_ABC_Local_Library_Build(cfg);
-        runPhase3_MappedFourWayValidation(cfg);
+        // runPhase3_MappedFourWayValidation(cfg);
         bool enable_extraction  = false; // Phase 1
         bool enable_synthesis   = false; // Phase 2
-        bool enable_validation  = false;  // Phase 3: 逻辑重写与 Innovus 验证
+        bool enable_validation  = true;  // Phase 3: 逻辑重写与 Innovus 验证
         
         // Phase 1: 提取 Benchmark 特征
         if (enable_extraction) {

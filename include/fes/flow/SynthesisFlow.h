@@ -45,11 +45,18 @@ namespace fes {
         std::string libPath_;
         InnovusVerifier verifier_;
 
+        // When true, every synthesized circuit is checked against its spec
+        // by the Z3-backed CEC (EquivalenceChecker) before being accepted.
+        bool verifyEnabled_ = false;
+
     public:
-        SynthesisFlow(const std::vector<GateType>& lib, 
-                      const std::string& abcPath, 
+        SynthesisFlow(const std::vector<GateType>& lib,
+                      const std::string& abcPath,
                       const std::string& libPath,
                       const std::string& pythonScriptPath);
+
+        // Toggle the --verify CEC pass on the logic-rewrite path.
+        void enableVerification(bool on) { verifyEnabled_ = on; }
 
         // 运行单个任务
         SynthesisResult run(const std::string& hexFunc, 

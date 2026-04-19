@@ -5,6 +5,7 @@
 #include <map>
 #include <filesystem>
 #include <set>
+#include "fes/core/Types.h"
 
 namespace fes {
 
@@ -25,17 +26,17 @@ public:
 
 private:
     std::string abcPath_;
-    std::map<uint16_t, int> frequency_map_;
-    std::set<uint16_t> guaranteed_funcs_;
+    std::map<LutTruthTable, int> frequency_map_;
+    std::set<LutTruthTable> guaranteed_funcs_;
 
     // 调用 ABC 将 inputFile 映射为 outputFile
     bool runAbcMapping(const std::filesystem::path& inputFile, const std::filesystem::path& outputFile);
 
     // 解析已映射的 BLIF 文件 (统计逻辑)
-    std::map<uint16_t, int> processMappedFile(const std::filesystem::path& filePath);
+    std::map<LutTruthTable, int> processMappedFile(const std::filesystem::path& filePath);
 
     // 辅助计算真值表
-    uint16_t computeTruthTable(int numInputs, const std::vector<std::string>& coverLines);
+    LutTruthTable computeTruthTable(int numInputs, const std::vector<std::string>& coverLines);
 };
 
 } // namespace fes

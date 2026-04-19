@@ -3,8 +3,11 @@
 #include <vector>
 #include <filesystem>
 #include <map>
+#include <memory>
 #include <set>
 #include <unordered_map>
+#include "fes/core/GateType.h"
+#include "fes/utils/EquivalenceChecker.h"
 #include "fes/utils/InnovusVerifier.h"
 
 namespace fes {
@@ -121,6 +124,12 @@ public:
      */
     void runBatchVerificationMappedFourWay(const std::string& benchmarksDir);
 
+    // When enabled, every rewrite/optimization path runs a BLIF-level
+    // combinational equivalence check against its input before handing
+    // back the rewritten file. A failed check discards the rewrite by
+    // returning the known-good input path instead.
+    void enableVerification(bool on) { verifyEnabled_ = on; }
+
 private:
     // 1. 递归获取所有 blif 文件路径
     std::vector<std::string> findBlifFilesRecursive(const std::filesystem::path& folderPath);
@@ -128,6 +137,48 @@ private:
     // 2. 读取库
     void loadOptimizationLibrary();      // 加载 PONO 库
     void loadABCOptimizationLibrary();   // 加载 ABC 局部库
+
+    // Knobs shared by every library-rewrite flow. Tuning these recovers the
+    // two legacy engines (aggressive/conservative PONO on raw BLIF, and the
+    // mapped-origin four-way flows) without duplicating the loop.
+    struct RewriteConfig {
+        // ABC sequence used to pre-map the input BLIF to 4-LUTs. Empty
+        // string means the input is already mapped.
+        std::string preMapAbcSeq;
+
+        // Score = totalSwitching
+        //       + kOutputWeight * outputToggle
+        //       + kGateWeight * max(1, gateCount)
+        //       + kActivityWeight * activityDistance
+        double kGateWeight     = 0.10;
+        double kOutputWeight   = 0.0;
+        double kActivityWeight = 0.0;
+
+        // When true, candidates must beat the original LUT's toggle-based
+        // score by (1 - kImproveMargin). When false, any feasible
+        // candidate wins -- matches the legacy PONO aggressive/conservative
+        // engines.
+        bool   useImprovementFilter = false;
+        double kImproveMargin       = 0.01;
+
+        // ABC sequence executed after the per-LUT rewriter emits optBlif.
+        // Typical choices:
+        //   "sweep; topo"                                -- light touch
+        //   "strash; dc2; balance; if -K 4 -a; sweep; topo"  -- heavy pass
+        std::string cleanupAbcSeq = "sweep; topo";
+
+        // Tag embedded in log lines and intermediate file names.
+        std::string tag = "PONO_LIB";
+    };
+
+    // Shared rewrite core. Returns the path to the resulting BLIF (after
+    // CEC verification when --verify is active) or the input path if the
+    // pre-mapping step fails.
+    std::string rewriteBlifUnified(
+        const std::string& inputBlifPath,
+        const std::vector<double>& actualProbs,
+        const std::map<std::string, std::vector<LibEntry>>& targetLib,
+        const RewriteConfig& cfg);
 
     // 3. 旧重写流程
     std::string rewriteBlifWithLibrary(const std::string& originalBlifPath,
@@ -185,6 +236,13 @@ private:
         const std::string& blifContent,
         const std::vector<double>& inputProbs);
 
+    // Shared CEC helper: runs the BLIF miter and, on failure, returns the
+    // input path so downstream PPA evaluation never sees a broken rewrite.
+    // Logs counterexample under "[CEC][Rewrite]".
+    std::string verifyRewriteOrRevert(const std::string& inputPath,
+                                      const std::string& rewrittenPath,
+                                      const std::string& tag);
+
 private:
     std::string libPath_;          // PONO 库路径
     std::string abcLocalLibPath_;  // ABC 局部库路径（新增）
@@ -194,6 +252,11 @@ private:
     // 核心存储：Hex_func -> 候选方案集合
     std::map<std::string, std::vector<LibEntry>> hexMappingLib_;     // PONO 库
     std::map<std::string, std::vector<LibEntry>> abcHexMappingLib_;  // ABC 局部库（新增）
+
+    // --verify support: BLIF-level CEC (Z3-backed) for every rewrite.
+    bool verifyEnabled_ = false;
+    std::vector<GateType> cecLibrary_;            // Empty -- BLIF CEC ignores it.
+    std::unique_ptr<EquivalenceChecker> cec_;
 };
 
 } // namespace fes
