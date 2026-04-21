@@ -7,6 +7,7 @@
 #include <set>
 #include <unordered_map>
 #include "fes/core/GateType.h"
+#include "fes/flow/RunManifest.h"
 #include "fes/utils/EquivalenceChecker.h"
 #include "fes/utils/InnovusVerifier.h"
 
@@ -129,6 +130,8 @@ public:
     // back the rewritten file. A failed check discards the rewrite by
     // returning the known-good input path instead.
     void enableVerification(bool on) { verifyEnabled_ = on; }
+    void setResumePolicy(ResumePolicy policy) { resumePolicy_ = policy; }
+    void setCaseTimeoutMs(int timeoutMs) { caseTimeoutMs_ = timeoutMs; }
 
 private:
     // 1. 递归获取所有 blif 文件路径
@@ -263,6 +266,10 @@ private:
     bool verifyEnabled_ = false;
     std::vector<GateType> cecLibrary_;            // Empty -- BLIF CEC ignores it.
     std::unique_ptr<EquivalenceChecker> cec_;
+
+    ResumePolicy resumePolicy_ = ResumePolicy::kRunAll;
+    int caseTimeoutMs_ = 0;
+    std::filesystem::path workDir_;
 };
 
 } // namespace fes

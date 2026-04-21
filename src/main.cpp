@@ -279,8 +279,9 @@ void printOptimizeHelp(const AppContext& ctx) {
         << "  --abc-local-lib <dir>\n"
         << "                      ABC local-library directory for mapped-four-way mode\n"
         << "  --resume, --skip-completed, --rerun <failed|timeout>\n"
-        << "                      Accepted for config symmetry; evaluator-level resume\n"
-        << "                      is not yet applied inside InnovusBatchEvaluator\n"
+        << "                      Apply evaluator-level per-benchmark resume/rerun\n"
+        << "  --case-timeout-ms <int>\n"
+        << "                      Mark an evaluation case timeout if runtime exceeds this threshold\n"
         << "  --verify            Enable rewrite-time CEC\n"
         << "  -h, --help          Show this message\n";
 }
@@ -451,7 +452,8 @@ int runOptimizeCommand(const AppContext& ctx, EvaluationOptions opts) {
     requireDirectory(opts.libraryDir / "detailed_infos", "Library detailed_infos");
 
     std::cout << "[Optimize] Resources: " << fs::absolute(runCtx.resourcesDir) << "\n";
-    std::cout << "[Optimize] tmp_eval: " << fs::absolute(runCtx.tmpEvalDir) << "\n";
+    std::cout << "[Optimize] tmp_eval: "
+              << fs::absolute(opts.libraryDir / "tmp_eval") << "\n";
     std::cout << "[Optimize] Tournament mode: aggressive vs conservative PONO rewrite\n";
     std::cout << "[Optimize] Library: " << fs::absolute(opts.libraryDir) << "\n";
     std::cout << "[Optimize] Benchmarks: " << fs::absolute(opts.benchmarkDir) << "\n";
@@ -469,6 +471,8 @@ int runOptimizeCommand(const AppContext& ctx, EvaluationOptions opts) {
             runCtx.pythonScriptPath.string(),
             runCtx.abcPath);
         mappedEvaluator.enableVerification(opts.verify);
+        mappedEvaluator.setResumePolicy(opts.resumePolicy);
+        mappedEvaluator.setCaseTimeoutMs(opts.caseTimeoutMs);
         mappedEvaluator.runBatchVerificationMappedFourWay(opts.benchmarkDir.string());
     } else {
         InnovusBatchEvaluator evaluator(
@@ -476,10 +480,10 @@ int runOptimizeCommand(const AppContext& ctx, EvaluationOptions opts) {
             runCtx.pythonScriptPath.string(),
             runCtx.abcPath);
         evaluator.enableVerification(opts.verify);
+        evaluator.setResumePolicy(opts.resumePolicy);
+        evaluator.setCaseTimeoutMs(opts.caseTimeoutMs);
         evaluator.runBatchVerification(opts.benchmarkDir.string());
     }
-    writeEvaluationSummary(
-        opts.libraryDir, opts.benchmarkDir, opts.mappedFourWay);
 
     std::cout << "[Optimize] Completed.\n";
     std::cout << "[Optimize] Validation CSV: "
