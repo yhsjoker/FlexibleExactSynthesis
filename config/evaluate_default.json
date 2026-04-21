@@ -1,0 +1,14 @@
+{
+  "command": "evaluate",
+  "run": {
+    "resume_policy": "run_all",
+    "case_timeout_ms": 0,
+    "threads": 0
+  },
+  "evaluate": {
+    "benchmark_dir": "/home/yhs_joker/datasets/benchmarks",
+    "library_dir": "",
+    "verify": false,
+    "mode": "standard"
+  }
+}

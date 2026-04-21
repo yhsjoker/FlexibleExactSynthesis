@@ -8,6 +8,8 @@
 #include "../core/GateType.h"
 #include "../core/Specification.h"
 #include "../core/CircuitGraph.h"
+#include "fes/flow/ActivityPatternGenerator.h"
+#include "fes/flow/RunManifest.h"
 #include "fes/core/Types.h"
 #include "fes/utils/InnovusVerifier.h"
 #include <unordered_map>
@@ -62,6 +64,13 @@ namespace fes {
         std::string outputCsv;
         std::string outputDir;
         bool enablePhysicalEval = false;
+        ActivityPatternSpec activityPatternSpec;
+        std::string activityPatternMode = "uniform";
+        ResumePolicy resumePolicy = ResumePolicy::kRunAll;
+        int satTimeoutMs = 10000;
+        int optTimeoutMs = 60000;
+        int caseTimeoutMs = 0;
+        unsigned workerCount = 0;
     };
 
     class SynthesisFlow {
@@ -92,7 +101,9 @@ namespace fes {
                             const std::string& outputDir,
                             int maxGates = 10,                    // [修改] 默认值放宽到 10，适配多输入
                             bool enablePhysicalEval = false,
-                            const std::string& workerScratchDir = "");
+                            const std::string& workerScratchDir = "",
+                            int satTimeoutMs = 10000,
+                            int optTimeoutMs = 60000);
 
         SynthesisResult run(const std::string& hexFunc, 
                             const std::vector<double>& inputProbs, 
@@ -118,12 +129,6 @@ namespace fes {
             void debugSingleHexCase(const std::string& hexFunc); 
 
     private:
-        // [新增] 递归生成多输入概率组合的辅助函数
-        void generateProbPatterns(int numInputs, 
-                                  const std::vector<double>& levels, 
-                                  std::vector<double>& current, 
-                                  std::vector<std::vector<double>>& results);
-
         void runAbcToGenerateBaseline(const std::string& hexFunc,
                                       int numInputs,
                                       const std::string& outBlifPath);
@@ -138,10 +143,18 @@ namespace fes {
         // 2. Phase 1: 使用 SAT (Kissat) 寻找最小门数
         // 返回 -1 表示失败
         int runMinimizationPhase(const Specification& spec, int maxGates);
+        int runMinimizationPhase(
+            const Specification& spec,
+            int maxGates,
+            int satTimeoutMs);
 
         // 3. Phase 2: 使用 OMT (Z3) 进行结构优化
         // 返回值: <是否成功, 电路图, 内部Cost>
         std::tuple<bool, CircuitGraph, double> runOptimizationPhase(const Specification& spec, int numGates);
+        std::tuple<bool, CircuitGraph, double> runOptimizationPhase(
+            const Specification& spec,
+            int numGates,
+            int optTimeoutMs);
 
         // 4. 后处理：保存文件、打印 Log、验证、评估
         void processResults(SynthesisResult& res, 
@@ -170,8 +183,6 @@ namespace fes {
             int numFunctionsToInclude) const;
         std::vector<LibraryFunction> buildBenchmarkDrivenFunctionSet(
             const LibraryGenerationConfig& cfg) const;
-        std::vector<std::vector<double>> buildUniformProbPatterns(
-            int numInputs) const;
         std::string probVectorToTag(const std::vector<double>& probs) const;
         std::string buildRawBlifFromHexFunc(
             const std::string& hexFunc,

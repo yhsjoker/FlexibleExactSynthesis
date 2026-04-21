@@ -122,3 +122,24 @@ add_executable(test_npn
     src/core/NpnTransform.cpp
 )
 add_test(NAME test_npn COMMAND test_npn)
+
+add_executable(test_activity_patterns
+    src/tests/test_activity_patterns.cpp
+    src/flow/ActivityPatternGenerator.cpp
+)
+add_test(NAME test_activity_patterns COMMAND test_activity_patterns)
+
+add_executable(test_generate_cli
+    src/tests/test_generate_cli.cpp
+    src/app/GenerateCli.cpp
+    src/app/AppConfig.cpp
+    src/flow/ActivityPatternGenerator.cpp
+    src/flow/RunManifest.cpp
+)
+add_test(NAME test_generate_cli COMMAND test_generate_cli)
+
+add_executable(test_run_manifest
+    src/tests/test_run_manifest.cpp
+    src/flow/RunManifest.cpp
+)
+add_test(NAME test_run_manifest COMMAND test_run_manifest)

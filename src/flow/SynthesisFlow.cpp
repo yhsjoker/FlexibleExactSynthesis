@@ -16,6 +16,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -61,6 +62,80 @@ public:
 private:
     std::vector<GeneratedLibraryCsvEntry> entries_;
 };
+
+std::map<std::string, GeneratedLibraryCsvEntry> loadGeneratedLibraryRows(
+    const std::string& csvPath) {
+    std::map<std::string, GeneratedLibraryCsvEntry> rows;
+    std::ifstream input(csvPath);
+    if (!input.is_open()) {
+        return rows;
+    }
+
+    std::string line;
+    bool isHeader = true;
+    while (std::getline(input, line)) {
+        if (isHeader) {
+            isHeader = false;
+            continue;
+        }
+        if (line.empty()) {
+            continue;
+        }
+
+        std::vector<std::string> fields;
+        std::string current;
+        bool inQuotes = false;
+        for (size_t i = 0; i < line.size(); ++i) {
+            const char c = line[i];
+            if (inQuotes) {
+                if (c == '"') {
+                    if (i + 1 < line.size() && line[i + 1] == '"') {
+                        current += '"';
+                        ++i;
+                    } else {
+                        inQuotes = false;
+                    }
+                } else {
+                    current += c;
+                }
+            } else if (c == ',') {
+                fields.push_back(current);
+                current.clear();
+            } else if (c == '"') {
+                inQuotes = true;
+            } else {
+                current += c;
+            }
+        }
+        fields.push_back(current);
+
+        if (fields.size() < 2) {
+            continue;
+        }
+        const std::string sortKey = fields[0] + fields[1];
+        rows[sortKey] = GeneratedLibraryCsvEntry{sortKey, line + "\n"};
+    }
+    return rows;
+}
+
+bool textContainsTimeout(std::string text) {
+    std::transform(
+        text.begin(),
+        text.end(),
+        text.begin(),
+        [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+    return text.find("timeout") != std::string::npos;
+}
+
+RunStatus statusForResult(const SynthesisResult& result) {
+    if (result.success) {
+        return RunStatus::kSuccess;
+    }
+    return textContainsTimeout(result.errorMsg) ? RunStatus::kTimeout
+                                                : RunStatus::kFailed;
+}
 
 std::string trimCopy(const std::string& text) {
     const size_t first = text.find_first_not_of(" \t\r\n");
@@ -295,23 +370,6 @@ SynthesisFlow::SynthesisFlow(const std::vector<GateType>& lib,
       libPath_(libPath),
       verifier_(pythonScriptPath) {}
 
-void SynthesisFlow::generateProbPatterns(
-    int numInputs,
-    const std::vector<double>& levels,
-    std::vector<double>& current,
-    std::vector<std::vector<double>>& results) {
-    if (static_cast<int>(current.size()) == numInputs) {
-        results.push_back(current);
-        return;
-    }
-
-    for (double level : levels) {
-        current.push_back(level);
-        generateProbPatterns(numInputs, levels, current, results);
-        current.pop_back();
-    }
-}
-
 void SynthesisFlow::runAbcToGenerateBaseline(const std::string& hexFunc,
                                              int numInputs,
                                              const std::string& outBlifPath) {
@@ -352,7 +410,9 @@ SynthesisResult SynthesisFlow::run(const std::string& hexFunc,
                                    const std::string& outputDir,
                                    int maxGates,
                                    bool enablePhysicalEval,
-                                   const std::string& workerScratchDir) {
+                                   const std::string& workerScratchDir,
+                                   int satTimeoutMs,
+                                   int optTimeoutMs) {
     SynthesisResult res{};
     res.hexFunc = normalizeHexForInputs(hexFunc, numInputs);
     res.numInputs = numInputs;
@@ -373,14 +433,15 @@ SynthesisResult SynthesisFlow::run(const std::string& hexFunc,
 
     try {
         Specification spec = buildSpecification(res.hexFunc, numInputs, inputProbs);
-        const int minGates = runMinimizationPhase(spec, maxGates);
+        const int minGates =
+            runMinimizationPhase(spec, maxGates, satTimeoutMs);
         if (minGates < 0) {
             res.errorMsg = "UNSAT within max gates";
             return finalize();
         }
 
         auto [optSuccess, graph, internalCost] =
-            runOptimizationPhase(spec, minGates);
+            runOptimizationPhase(spec, minGates, optTimeoutMs);
         if (!optSuccess) {
             res.errorMsg = "Z3 optimization failed";
             return finalize();
@@ -508,16 +569,28 @@ bool SynthesisFlow::runBatch(const LibraryGenerationConfig& cfg) {
 
         fs::create_directories(cfg.outputDir);
         fs::create_directories(fs::path(cfg.outputDir) / "detailed_infos");
-        fs::create_directories("tmp_eval");
+        fs::create_directories(fs::path(cfg.outputDir) / "tmp_eval");
+
+        RunManifest manifest(fs::path(cfg.outputDir) / "run_manifest.csv");
+        manifest.load();
+        const auto previousRows = loadGeneratedLibraryRows(cfg.outputCsv);
 
         GeneratedLibrary m_library;
         std::mutex libraryMutex;
+        std::mutex manifestMutex;
         std::mutex logMutex;
         std::atomic<size_t> nextIndex{0};
+        std::atomic<int> totalCaseCount{0};
+        std::atomic<int> runCaseCount{0};
+        std::atomic<int> skippedCount{0};
+        std::atomic<int> resumedCount{0};
         std::atomic<int> successCount{0};
         std::atomic<int> failureCount{0};
+        std::atomic<int> timeoutCount{0};
 
-        const unsigned hw = std::max(1u, std::thread::hardware_concurrency());
+        const unsigned hw = cfg.workerCount > 0
+                                ? cfg.workerCount
+                                : std::max(1u, std::thread::hardware_concurrency());
         const unsigned threadCount = std::min<unsigned>(
             hw, std::max<unsigned>(1u, static_cast<unsigned>(functions.size())));
 
@@ -529,7 +602,9 @@ bool SynthesisFlow::runBatch(const LibraryGenerationConfig& cfg) {
                 }
 
                 const LibraryFunction& func = functions[index];
-                const auto probPatterns = buildUniformProbPatterns(func.numInputs);
+                const auto probPatterns =
+                    generateActivityPatterns(
+                        func.numInputs, cfg.activityPatternSpec);
 
                 {
                     std::lock_guard<std::mutex> lock(logMutex);
@@ -541,6 +616,33 @@ bool SynthesisFlow::runBatch(const LibraryGenerationConfig& cfg) {
                 for (const auto& inputProbs : probPatterns) {
                     const std::string probTag = probVectorToTag(inputProbs);
                     const std::string variantName = func.hexFunc + probTag;
+                    ++totalCaseCount;
+
+                    bool shouldRun = true;
+                    bool isResumeAttempt = false;
+                    {
+                        std::lock_guard<std::mutex> lock(manifestMutex);
+                        shouldRun =
+                            manifest.shouldRun(variantName, cfg.resumePolicy);
+                        isResumeAttempt =
+                            manifest.isResumeAttempt(variantName, cfg.resumePolicy);
+                    }
+
+                    if (!shouldRun) {
+                        ++skippedCount;
+                        const auto previous = previousRows.find(variantName);
+                        if (previous != previousRows.end()) {
+                            std::lock_guard<std::mutex> lock(libraryMutex);
+                            m_library.addEntry(previous->second);
+                        }
+                        continue;
+                    }
+
+                    if (isResumeAttempt) {
+                        ++resumedCount;
+                    }
+                    ++runCaseCount;
+
                     SynthesisResult res = run(
                         func.hexFunc,
                         func.numInputs,
@@ -549,7 +651,15 @@ bool SynthesisFlow::runBatch(const LibraryGenerationConfig& cfg) {
                         cfg.outputDir,
                         10,
                         cfg.enablePhysicalEval,
-                        (fs::path(cfg.outputDir) / "tmp_eval").string());
+                        (fs::path(cfg.outputDir) / "tmp_eval").string(),
+                        cfg.satTimeoutMs,
+                        cfg.optTimeoutMs);
+
+                    if (cfg.caseTimeoutMs > 0 &&
+                        res.runtimeMs > static_cast<double>(cfg.caseTimeoutMs)) {
+                        res.success = false;
+                        res.errorMsg = "Case timeout threshold exceeded";
+                    }
 
                     std::ostringstream row;
                     row << res.hexFunc << "," << probTag << ","
@@ -577,7 +687,30 @@ bool SynthesisFlow::runBatch(const LibraryGenerationConfig& cfg) {
                     if (res.success) {
                         ++successCount;
                     } else {
-                        ++failureCount;
+                        if (statusForResult(res) == RunStatus::kTimeout) {
+                            ++timeoutCount;
+                        } else {
+                            ++failureCount;
+                        }
+                    }
+
+                    RunManifestEntry manifestEntry;
+                    manifestEntry.caseId = variantName;
+                    manifestEntry.kind = "generate";
+                    manifestEntry.functionId = func.hexFunc;
+                    manifestEntry.activityTag = probTag;
+                    manifestEntry.activityMode = cfg.activityPatternMode;
+                    manifestEntry.status = statusForResult(res);
+                    manifestEntry.runtimeMs = res.runtimeMs;
+                    manifestEntry.outputPath =
+                        (fs::path(cfg.outputDir) / "detailed_infos" /
+                         res.hexFunc / ("pono_" + variantName + ".blif"))
+                            .string();
+                    manifestEntry.reason = res.errorMsg;
+                    {
+                        std::lock_guard<std::mutex> lock(manifestMutex);
+                        manifest.update(manifestEntry);
+                        manifest.flush();
                     }
                 }
             }
@@ -617,12 +750,29 @@ bool SynthesisFlow::runBatch(const LibraryGenerationConfig& cfg) {
             out << row.csvLine;
         }
 
+        RunSummary summary;
+        summary.command = "generate";
+        summary.activityMode = cfg.activityPatternMode;
+        summary.outputCsv = cfg.outputCsv;
+        summary.manifestCsv = manifest.path();
+        summary.totalCases = static_cast<std::size_t>(totalCaseCount.load());
+        summary.runCases = static_cast<std::size_t>(runCaseCount.load());
+        summary.skippedCases = static_cast<std::size_t>(skippedCount.load());
+        summary.resumedCases = static_cast<std::size_t>(resumedCount.load());
+        summary.successCases = static_cast<std::size_t>(successCount.load());
+        summary.failedCases = static_cast<std::size_t>(failureCount.load());
+        summary.timeoutCases = static_cast<std::size_t>(timeoutCount.load());
+        writeRunSummaryJson(
+            fs::path(cfg.outputDir) / "generation_summary.json", summary);
+
         std::cout << "[Batch] Done. Functions=" << functions.size()
                   << ", Variants=" << rows.size()
                   << ", Success=" << successCount.load()
                   << ", Fail=" << failureCount.load()
+                  << ", Timeout=" << timeoutCount.load()
+                  << ", Skipped=" << skippedCount.load()
                   << ", CSV=" << cfg.outputCsv << "\n";
-        return successCount.load() > 0;
+        return successCount.load() > 0 || skippedCount.load() > 0;
     } catch (const std::exception& e) {
         std::cerr << "[Batch] Exception: " << e.what() << "\n";
         return false;
@@ -651,7 +801,7 @@ bool SynthesisFlow::buildABCLocalLibraryFromTopCsv(
 
     fs::create_directories(outputDir);
     fs::create_directories(fs::path(outputDir) / "detailed_infos");
-    fs::create_directories("tmp_eval");
+    fs::create_directories(fs::path(outputDir) / "tmp_eval");
 
     GeneratedLibrary m_library;
     std::mutex libraryMutex;
@@ -672,7 +822,7 @@ bool SynthesisFlow::buildABCLocalLibraryFromTopCsv(
             }
 
             const LibraryFunction& func = functions[index];
-            const auto probPatterns = buildUniformProbPatterns(func.numInputs);
+            const auto probPatterns = generateActivityPatterns(func.numInputs);
 
             {
                 std::lock_guard<std::mutex> lock(logMutex);
@@ -684,10 +834,13 @@ bool SynthesisFlow::buildABCLocalLibraryFromTopCsv(
                 ++totalCases;
 
                 std::string tmpBlif =
-                    "tmp_eval/thread_" +
-                    std::to_string(
-                        std::hash<std::thread::id>{}(std::this_thread::get_id())) +
-                    ".blif";
+                    (fs::path(outputDir) / "tmp_eval" /
+                     ("thread_" +
+                      std::to_string(
+                          std::hash<std::thread::id>{}(
+                              std::this_thread::get_id())) +
+                      ".blif"))
+                        .string();
 
                 std::string csvLine;
                 const bool ok = runSingleABCLocalCase(
@@ -766,9 +919,16 @@ Specification SynthesisFlow::buildSpecification(
 }
 
 int SynthesisFlow::runMinimizationPhase(const Specification& spec, int maxGates) {
+    return runMinimizationPhase(spec, maxGates, 10000);
+}
+
+int SynthesisFlow::runMinimizationPhase(
+    const Specification& spec,
+    int maxGates,
+    int satTimeoutMs) {
     for (int numGates = 1; numGates <= maxGates; ++numGates) {
         auto solver = std::make_unique<KissatSolver>();
-        solver->setTimeLimit(10000);
+        solver->setTimeLimit(static_cast<unsigned int>(std::max(0, satTimeoutMs)));
         PatternEncoder encoder(numGates);
         if (!encoder.encode(solver.get(), spec, library_)) {
             continue;
@@ -783,8 +943,15 @@ int SynthesisFlow::runMinimizationPhase(const Specification& spec, int maxGates)
 std::tuple<bool, CircuitGraph, double> SynthesisFlow::runOptimizationPhase(
     const Specification& spec,
     int numGates) {
+    return runOptimizationPhase(spec, numGates, 60000);
+}
+
+std::tuple<bool, CircuitGraph, double> SynthesisFlow::runOptimizationPhase(
+    const Specification& spec,
+    int numGates,
+    int optTimeoutMs) {
     auto solver = std::make_unique<Z3Solver>();
-    solver->setTimeLimit(60000);
+    solver->setTimeLimit(static_cast<unsigned int>(std::max(0, optTimeoutMs)));
 
     PatternEncoder encoder(numGates);
     if (!encoder.encode(solver.get(), spec, library_)) {
@@ -1133,26 +1300,28 @@ std::vector<LibraryFunction> SynthesisFlow::buildBenchmarkDrivenFunctionSet(
     return functions;
 }
 
-std::vector<std::vector<double>> SynthesisFlow::buildUniformProbPatterns(
-    int numInputs) const {
-    if (numInputs <= 0) {
-        return {{}};
-    }
-
-    std::vector<std::vector<double>> patterns;
-    patterns.reserve(9);
-    for (int i = 1; i <= 9; ++i) {
-        patterns.push_back(
-            std::vector<double>(numInputs, 0.1 * static_cast<double>(i)));
-    }
-    return patterns;
-}
-
 std::string SynthesisFlow::probVectorToTag(
     const std::vector<double>& probs) const {
     std::ostringstream oss;
     for (double p : probs) {
-        oss << "_" << static_cast<int>(std::round(p * 100.0));
+        const double stable = ActivityPatternGenerator::stableActivityValue(p);
+        const double percent = stable * 100.0;
+        const double roundedPercent = std::round(percent);
+        if (std::abs(percent - roundedPercent) <=
+            ActivityPatternGenerator::kComparisonTolerance * 100.0) {
+            oss << "_" << static_cast<int>(roundedPercent);
+            continue;
+        }
+
+        std::string value = ActivityPatternGenerator::stableValueString(stable);
+        while (value.size() > 1 && value.back() == '0') {
+            value.pop_back();
+        }
+        if (!value.empty() && value.back() == '.') {
+            value.push_back('0');
+        }
+        std::replace(value.begin(), value.end(), '.', 'p');
+        oss << "_p" << value;
     }
     return oss.str();
 }

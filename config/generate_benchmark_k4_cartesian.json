@@ -1,0 +1,22 @@
+{
+  "command": "generate",
+  "run": {
+    "resume_policy": "resume",
+    "case_timeout_ms": 0,
+    "threads": 0
+  },
+  "generate": {
+    "k": 4,
+    "num_functions": 32,
+    "function_source": "benchmark",
+    "benchmark_dir": "/home/yhs_joker/datasets/benchmarks",
+    "output_dir": "results_repo/benchmark_k4_cartesian",
+    "verify": false,
+    "sat_timeout_ms": 10000,
+    "opt_timeout_ms": 60000,
+    "activity": {
+      "mode": "cartesian",
+      "levels": [0.2, 0.4, 0.6, 0.8]
+    }
+  }
+}

@@ -1,5 +1,7 @@
 #include "fes/core/GateType.h"
 #include "fes/core/Types.h"
+#include "fes/app/AppConfig.h"
+#include "fes/app/GenerateCli.h"
 #include "fes/flow/SynthesisFlow.h"
 #include "fes/utils/CellLibraryLoader.h"
 #include "fes/utils/InnovusBatchEvaluator.h"
@@ -18,6 +20,12 @@
 
 using namespace fes;
 namespace fs = std::filesystem;
+
+using fes::app::GenerateOptions;
+using fes::app::EvaluationOptions;
+using fes::app::parseGenerateOptions;
+using fes::app::parseEvaluationOptions;
+using fes::app::resolveGenerateOutputDir;
 
 namespace {
 
@@ -38,23 +46,6 @@ struct AppContext {
     std::string abcPath = kDefaultAbcPath;
     fs::path defaultBenchmarkDir = kDefaultBenchmarkPath;
     unsigned workerCount = 1;
-};
-
-struct GenerateOptions {
-    int k = 4;
-    int numFunctions = 222;
-    std::string mode = "exhaustive";
-    fs::path benchmarkDir;
-    fs::path outputDir;
-    bool verify = false;
-    bool help = false;
-};
-
-struct OptimizeOptions {
-    fs::path benchmarkDir;
-    fs::path libraryDir;
-    bool verify = false;
-    bool help = false;
 };
 
 std::vector<GateType> createLibrary() {
@@ -174,7 +165,7 @@ AppContext discoverContext() {
 
     ctx.resourcesDir = ctx.projectRoot / "resources";
     ctx.resultsRepoDir = ctx.projectRoot / "results_repo";
-    ctx.tmpEvalDir = cwd / "tmp_eval";
+    ctx.tmpEvalDir = ctx.resultsRepoDir / "tmp_eval";
 
     fs::create_directories(ctx.resourcesDir);
     fs::create_directories(ctx.resultsRepoDir);
@@ -244,10 +235,26 @@ void printGenerateHelp(const AppContext& ctx) {
         << "  --k <int>           LUT input size (default: 4, max compiled: "
         << kLutMaxInputs << ")\n"
         << "  --num <int>         Number of functions to include (default: 222)\n"
+        << "  --config <file>     JSON config file. CLI flags override config values\n"
         << "  --mode <mode>       exhaustive | benchmark (default: exhaustive)\n"
         << "  --path <dir>        Benchmark directory for benchmark mode\n"
         << "                      (default: " << ctx.defaultBenchmarkDir.string() << ")\n"
-        << "  --out <dir>         Output directory under results_repo\n"
+        << "  --out <dir>         Output directory. Relative paths are rooted under\n"
+        << "                      " << ctx.resultsRepoDir.string() << "\n"
+        << "  --activity-mode <mode>\n"
+        << "                      uniform | cartesian | explicit (default: uniform)\n"
+        << "  --activity-levels <csv>\n"
+        << "                      Comma-separated levels for uniform/cartesian modes\n"
+        << "  --activity-explicit <patterns>\n"
+        << "                      Semicolon-separated explicit patterns, e.g.\n"
+        << "                      \"0.1,0.2,0.3,0.4;0.4,0.3,0.2,0.1\"\n"
+        << "  --resume            Resume partial run; completed cases are skipped\n"
+        << "  --skip-completed    Skip cases already marked success in run_manifest.csv\n"
+        << "  --rerun <status>    failed | timeout\n"
+        << "  --sat-timeout-ms <int>, --opt-timeout-ms <int>\n"
+        << "                      Solver timeout settings for generated cases\n"
+        << "  --case-timeout-ms <int>\n"
+        << "                      Mark a case timeout if runtime exceeds this threshold\n"
         << "  --verify            Enable CEC on synthesized sub-circuits\n"
         << "  -h, --help          Show this message\n\n"
         << "Notes:\n"
@@ -260,13 +267,20 @@ void printGenerateHelp(const AppContext& ctx) {
 
 void printOptimizeHelp(const AppContext& ctx) {
     std::cout
-        << "Usage: fes_app optimize [options]\n\n"
+        << "Usage: fes_app optimize|evaluate|benchmark [options]\n\n"
         << "Run the existing PONO tournament optimization flow on a benchmark set.\n\n"
         << "Options:\n"
+        << "  --config <file>     JSON config file. CLI flags override config values\n"
         << "  --path <dir>        Benchmark directory to optimize\n"
         << "                      (default: " << ctx.defaultBenchmarkDir.string() << ")\n"
         << "  --lib <dir>         Generated library directory to use\n"
         << "                      (default: newest results_repo/* with detailed_infos)\n"
+        << "  --mapped-four-way   Run mapped-origin four-way validation\n"
+        << "  --abc-local-lib <dir>\n"
+        << "                      ABC local-library directory for mapped-four-way mode\n"
+        << "  --resume, --skip-completed, --rerun <failed|timeout>\n"
+        << "                      Accepted for config symmetry; evaluator-level resume\n"
+        << "                      is not yet applied inside InnovusBatchEvaluator\n"
         << "  --verify            Enable rewrite-time CEC\n"
         << "  -h, --help          Show this message\n";
 }
@@ -275,11 +289,13 @@ void printGeneralHelp(const AppContext& ctx) {
     std::cout
         << "Usage:\n"
         << "  fes_app generate [options]\n"
-        << "  fes_app optimize [options]\n"
-        << "  fes_app help [generate|optimize]\n\n"
+        << "  fes_app optimize|evaluate|benchmark [options]\n"
+        << "  fes_app help [generate|optimize|evaluate|benchmark]\n\n"
         << "Commands:\n"
         << "  generate   Build a sub-circuit library using exhaustive or benchmark mode\n"
-        << "  optimize   Run the tournament-based PONO optimization flow on benchmarks\n\n"
+        << "  optimize   Run the tournament-based PONO optimization flow on benchmarks\n"
+        << "  evaluate   Alias for optimize with config-friendly naming\n"
+        << "  benchmark  Alias for optimize/physical validation workflows\n\n"
         << "Compatibility:\n"
         << "  cat design.blif | fes_app -c p1 p2 ...\n"
         << "  keeps the legacy stdin API optimization path.\n\n";
@@ -288,111 +304,51 @@ void printGeneralHelp(const AppContext& ctx) {
     printOptimizeHelp(ctx);
 }
 
-GenerateOptions parseGenerateOptions(const std::vector<std::string>& args) {
-    GenerateOptions opts;
-
-    for (size_t i = 0; i < args.size(); ++i) {
-        const std::string& arg = args[i];
-        std::string value;
-
-        if (arg == "-h" || arg == "--help") {
-            opts.help = true;
-            continue;
-        }
-        if (arg == "--verify") {
-            opts.verify = true;
-            continue;
-        }
-        if (consumeOption(args, i, "--k", &value)) {
-            opts.k = parseIntOption(value, "--k");
-            continue;
-        }
-        if (consumeOption(args, i, "--num", &value)) {
-            opts.numFunctions = parseIntOption(value, "--num");
-            continue;
-        }
-        if (consumeOption(args, i, "--mode", &value)) {
-            opts.mode = toLowerCopy(value);
-            continue;
-        }
-        if (consumeOption(args, i, "--path", &value)) {
-            opts.benchmarkDir = value;
-            continue;
-        }
-        if (consumeOption(args, i, "--out", &value)) {
-            opts.outputDir = value;
-            continue;
-        }
-
-        throw std::runtime_error("Unknown generate option: " + arg);
+void applyGenerateToolOverrides(AppContext& ctx, const GenerateOptions& opts) {
+    if (!opts.abcPath.empty()) ctx.abcPath = opts.abcPath;
+    if (!opts.genlibPath.empty()) ctx.genlibPath = opts.genlibPath;
+    if (!opts.libertyPath.empty()) ctx.libertyPath = opts.libertyPath;
+    if (!opts.pythonScriptPath.empty()) ctx.pythonScriptPath = opts.pythonScriptPath;
+    if (!opts.standardCellCsvPath.empty()) {
+        ctx.standardCellCsvPath = opts.standardCellCsvPath;
     }
-
-    if (opts.k <= 0 || opts.k > kLutMaxInputs) {
-        throw std::runtime_error(
-            "--k must be in the range [1, " + std::to_string(kLutMaxInputs) + "]");
-    }
-    if (opts.numFunctions < 0) {
-        throw std::runtime_error("--num must be non-negative.");
-    }
-    if (opts.mode != "exhaustive" && opts.mode != "benchmark") {
-        throw std::runtime_error("--mode must be 'exhaustive' or 'benchmark'.");
-    }
-
-    return opts;
+    if (opts.workerCount > 0) ctx.workerCount = opts.workerCount;
 }
 
-OptimizeOptions parseOptimizeOptions(const std::vector<std::string>& args) {
-    OptimizeOptions opts;
-
-    for (size_t i = 0; i < args.size(); ++i) {
-        const std::string& arg = args[i];
-        std::string value;
-
-        if (arg == "-h" || arg == "--help") {
-            opts.help = true;
-            continue;
-        }
-        if (arg == "--verify") {
-            opts.verify = true;
-            continue;
-        }
-        if (consumeOption(args, i, "--path", &value)) {
-            opts.benchmarkDir = value;
-            continue;
-        }
-        if (consumeOption(args, i, "--lib", &value)) {
-            opts.libraryDir = value;
-            continue;
-        }
-
-        throw std::runtime_error("Unknown optimize option: " + arg);
-    }
-
-    return opts;
+void applyEvaluationToolOverrides(AppContext& ctx,
+                                  const EvaluationOptions& opts) {
+    if (!opts.abcPath.empty()) ctx.abcPath = opts.abcPath;
+    if (!opts.pythonScriptPath.empty()) ctx.pythonScriptPath = opts.pythonScriptPath;
+    if (opts.workerCount > 0) ctx.workerCount = opts.workerCount;
 }
 
 int runGenerateCommand(const AppContext& ctx, GenerateOptions opts) {
-    requireFile(ctx.pythonScriptPath, "Python evaluation script");
-    requireFile(ctx.genlibPath, "ABC genlib");
-    requireFile(ctx.libertyPath, "Standard-cell Liberty file");
+    AppContext runCtx = ctx;
+    applyGenerateToolOverrides(runCtx, opts);
 
-    if (opts.outputDir.empty()) {
-        opts.outputDir = defaultGenerateOutputDir(ctx, opts);
-    }
+    requireFile(runCtx.pythonScriptPath, "Python evaluation script");
+    requireFile(runCtx.genlibPath, "ABC genlib");
+    requireFile(runCtx.libertyPath, "Standard-cell Liberty file");
+
+    opts.outputDir = resolveGenerateOutputDir(
+        runCtx.projectRoot,
+        runCtx.resultsRepoDir,
+        opts.outputDir,
+        defaultGenerateOutputDir(runCtx, opts));
     fs::create_directories(opts.outputDir);
 
     const auto standardCells = CellLibraryLoader::loadOrGenerate(
-        ctx.standardCellCsvPath.string(),
-        ctx.libertyPath.string(),
+        runCtx.standardCellCsvPath.string(),
+        runCtx.libertyPath.string(),
         opts.k);
     if (standardCells.empty()) {
         throw std::runtime_error(
             "No standard cells available for K=" + std::to_string(opts.k));
     }
 
-    std::cout << "[Generate] Resources: " << fs::absolute(ctx.resourcesDir) << "\n";
-    std::cout << "[Generate] tmp_eval: " << fs::absolute(ctx.tmpEvalDir) << "\n";
-    std::cout << "[Generate] Worker threads: " << ctx.workerCount
+    std::cout << "[Generate] Resources: " << fs::absolute(runCtx.resourcesDir) << "\n";
+    std::cout << "[Generate] tmp_eval: " << fs::absolute(runCtx.tmpEvalDir) << "\n";
+    std::cout << "[Generate] Worker threads: " << runCtx.workerCount
               << " (used internally by SynthesisFlow)\n";
     std::cout << "[Generate] Loaded standard cells: " << standardCells.size()
               << " for K<=" << opts.k << "\n";
@@ -403,13 +359,20 @@ int runGenerateCommand(const AppContext& ctx, GenerateOptions opts) {
     cfg.outputDir = opts.outputDir.string();
     cfg.outputCsv = (opts.outputDir / "final_results.csv").string();
     cfg.enablePhysicalEval = false;
+    cfg.activityPatternSpec = opts.activityPatternSpec;
+    cfg.activityPatternMode = opts.activityModeName;
+    cfg.resumePolicy = opts.resumePolicy;
+    cfg.satTimeoutMs = opts.satTimeoutMs;
+    cfg.optTimeoutMs = opts.optTimeoutMs;
+    cfg.caseTimeoutMs = opts.caseTimeoutMs;
+    cfg.workerCount = opts.workerCount;
 
     if (opts.mode == "exhaustive") {
         cfg.mode = LibraryGenerationMode::kExhaustiveNpn;
     } else {
         cfg.mode = LibraryGenerationMode::kBenchmarkDriven;
-        cfg.benchmarkDir = opts.benchmarkDir.empty()
-                               ? ctx.defaultBenchmarkDir.string()
+            cfg.benchmarkDir = opts.benchmarkDir.empty()
+                               ? runCtx.defaultBenchmarkDir.string()
                                : opts.benchmarkDir.string();
         cfg.inputCsv = (opts.outputDir / "top_ranked_funcs.csv").string();
         requireDirectory(cfg.benchmarkDir, "Benchmark directory");
@@ -417,9 +380,9 @@ int runGenerateCommand(const AppContext& ctx, GenerateOptions opts) {
 
     SynthesisFlow flow(
         createLibrary(),
-        ctx.abcPath,
-        ctx.genlibPath.string(),
-        ctx.pythonScriptPath.string());
+        runCtx.abcPath,
+        runCtx.genlibPath.string(),
+        runCtx.pythonScriptPath.string());
     flow.enableVerification(opts.verify);
 
     if (!flow.generateLibrary(cfg)) {
@@ -434,16 +397,49 @@ int runGenerateCommand(const AppContext& ctx, GenerateOptions opts) {
     return 0;
 }
 
-int runOptimizeCommand(const AppContext& ctx, OptimizeOptions opts) {
-    requireFile(ctx.pythonScriptPath, "Python evaluation script");
+fs::path resolveResultsRepoPath(const AppContext& ctx, const fs::path& path) {
+    if (path.empty() || path.is_absolute()) {
+        return path;
+    }
+    return resolveGenerateOutputDir(
+        ctx.projectRoot, ctx.resultsRepoDir, path, ctx.resultsRepoDir);
+}
+
+void writeEvaluationSummary(const fs::path& libraryDir,
+                            const fs::path& benchmarkDir,
+                            bool mappedFourWay) {
+    std::ofstream out(libraryDir / "evaluation_summary.json");
+    if (!out.is_open()) {
+        return;
+    }
+    out << "{\n"
+        << "  \"command\": \"evaluate\",\n"
+        << "  \"status\": \"completed\",\n"
+        << "  \"mode\": \"" << (mappedFourWay ? "mapped_four_way" : "standard") << "\",\n"
+        << "  \"benchmark_dir\": \"" << benchmarkDir.string() << "\",\n"
+        << "  \"library_dir\": \"" << libraryDir.string() << "\",\n"
+        << "  \"validation_csv\": \""
+        << (libraryDir / (mappedFourWay ? "ppa_mapped_four_way_validation.csv"
+                                        : "ppa_complete_validation.csv")).string()
+        << "\"\n"
+        << "}\n";
+}
+
+int runOptimizeCommand(const AppContext& ctx, EvaluationOptions opts) {
+    AppContext runCtx = ctx;
+    applyEvaluationToolOverrides(runCtx, opts);
+
+    requireFile(runCtx.pythonScriptPath, "Python evaluation script");
 
     if (opts.benchmarkDir.empty()) {
-        opts.benchmarkDir = ctx.defaultBenchmarkDir;
+        opts.benchmarkDir = runCtx.defaultBenchmarkDir;
     }
     requireDirectory(opts.benchmarkDir, "Benchmark directory");
 
     if (opts.libraryDir.empty()) {
-        opts.libraryDir = findLatestGeneratedLibraryDir(ctx.resultsRepoDir);
+        opts.libraryDir = findLatestGeneratedLibraryDir(runCtx.resultsRepoDir);
+    } else {
+        opts.libraryDir = resolveResultsRepoPath(runCtx, opts.libraryDir);
     }
     if (opts.libraryDir.empty()) {
         throw std::runtime_error(
@@ -454,22 +450,43 @@ int runOptimizeCommand(const AppContext& ctx, OptimizeOptions opts) {
     requireFile(opts.libraryDir / "final_results.csv", "Library index");
     requireDirectory(opts.libraryDir / "detailed_infos", "Library detailed_infos");
 
-    std::cout << "[Optimize] Resources: " << fs::absolute(ctx.resourcesDir) << "\n";
-    std::cout << "[Optimize] tmp_eval: " << fs::absolute(ctx.tmpEvalDir) << "\n";
+    std::cout << "[Optimize] Resources: " << fs::absolute(runCtx.resourcesDir) << "\n";
+    std::cout << "[Optimize] tmp_eval: " << fs::absolute(runCtx.tmpEvalDir) << "\n";
     std::cout << "[Optimize] Tournament mode: aggressive vs conservative PONO rewrite\n";
     std::cout << "[Optimize] Library: " << fs::absolute(opts.libraryDir) << "\n";
     std::cout << "[Optimize] Benchmarks: " << fs::absolute(opts.benchmarkDir) << "\n";
 
-    InnovusBatchEvaluator evaluator(
-        opts.libraryDir.string(),
-        ctx.pythonScriptPath.string(),
-        ctx.abcPath);
-    evaluator.enableVerification(opts.verify);
-    evaluator.runBatchVerification(opts.benchmarkDir.string());
+    if (opts.mappedFourWay) {
+        if (opts.abcLocalLibraryDir.empty()) {
+            throw std::runtime_error(
+                "--mapped-four-way requires --abc-local-lib or config evaluate.abc_local_library_dir.");
+        }
+        opts.abcLocalLibraryDir =
+            resolveResultsRepoPath(runCtx, opts.abcLocalLibraryDir);
+        InnovusBatchEvaluator mappedEvaluator(
+            opts.libraryDir.string(),
+            opts.abcLocalLibraryDir.string(),
+            runCtx.pythonScriptPath.string(),
+            runCtx.abcPath);
+        mappedEvaluator.enableVerification(opts.verify);
+        mappedEvaluator.runBatchVerificationMappedFourWay(opts.benchmarkDir.string());
+    } else {
+        InnovusBatchEvaluator evaluator(
+            opts.libraryDir.string(),
+            runCtx.pythonScriptPath.string(),
+            runCtx.abcPath);
+        evaluator.enableVerification(opts.verify);
+        evaluator.runBatchVerification(opts.benchmarkDir.string());
+    }
+    writeEvaluationSummary(
+        opts.libraryDir, opts.benchmarkDir, opts.mappedFourWay);
 
     std::cout << "[Optimize] Completed.\n";
     std::cout << "[Optimize] Validation CSV: "
-              << fs::absolute(opts.libraryDir / "ppa_complete_validation.csv")
+              << fs::absolute(
+                     opts.libraryDir /
+                     (opts.mappedFourWay ? "ppa_mapped_four_way_validation.csv"
+                                         : "ppa_complete_validation.csv"))
               << "\n";
     return 0;
 }
@@ -536,7 +553,9 @@ int main(int argc, char** argv) {
                 printGeneralHelp(ctx);
             } else if (args[0] == "generate") {
                 printGenerateHelp(ctx);
-            } else if (args[0] == "optimize") {
+            } else if (args[0] == "optimize" ||
+                       args[0] == "evaluate" ||
+                       args[0] == "benchmark") {
                 printOptimizeHelp(ctx);
             } else {
                 throw std::runtime_error("Unknown help topic: " + args[0]);
@@ -545,7 +564,8 @@ int main(int argc, char** argv) {
         }
 
         if (command == "generate") {
-            const GenerateOptions opts = parseGenerateOptions(args);
+            const GenerateOptions opts =
+                parseGenerateOptions(args, kLutMaxInputs);
             if (opts.help) {
                 printGenerateHelp(ctx);
                 return 0;
@@ -553,8 +573,11 @@ int main(int argc, char** argv) {
             return runGenerateCommand(ctx, opts);
         }
 
-        if (command == "optimize") {
-            const OptimizeOptions opts = parseOptimizeOptions(args);
+        if (command == "optimize" ||
+            command == "evaluate" ||
+            command == "benchmark") {
+            const EvaluationOptions opts =
+                parseEvaluationOptions(args, kLutMaxInputs);
             if (opts.help) {
                 printOptimizeHelp(ctx);
                 return 0;
