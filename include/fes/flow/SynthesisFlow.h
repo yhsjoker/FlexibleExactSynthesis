@@ -4,9 +4,11 @@
 #include <string>
 #include <vector>
 #include <tuple>
+#include <cstddef>
 #include "../core/GateType.h"
 #include "../core/Specification.h"
 #include "../core/CircuitGraph.h"
+#include "fes/core/Types.h"
 #include "fes/utils/InnovusVerifier.h"
 #include <unordered_map>
 
@@ -22,6 +24,7 @@ namespace fes {
 
     struct SynthesisResult {
         std::string hexFunc;
+        int numInputs = 0;
         bool success;
         
         // PONO 内部数据
@@ -36,6 +39,29 @@ namespace fes {
         AbcStats baselineStats;
         
         std::string errorMsg;
+    };
+
+    enum class LibraryGenerationMode {
+        kFromCsv,
+        kExhaustiveNpn,
+        kBenchmarkDriven
+    };
+
+    struct LibraryFunction {
+        std::string hexFunc;
+        int numInputs = 0;
+        std::size_t frequency = 0;
+    };
+
+    struct LibraryGenerationConfig {
+        LibraryGenerationMode mode = LibraryGenerationMode::kFromCsv;
+        int lutInputs = kLutMaxInputs;
+        int numFunctionsToInclude = 0;
+        std::string inputCsv;
+        std::string benchmarkDir;
+        std::string outputCsv;
+        std::string outputDir;
+        bool enablePhysicalEval = false;
     };
 
     class SynthesisFlow {
@@ -60,6 +86,15 @@ namespace fes {
 
         // 运行单个任务
         SynthesisResult run(const std::string& hexFunc, 
+                            int numInputs,
+                            const std::vector<double>& inputProbs, 
+                            const std::string& probTag,           // [新增] 概率标签 (例如 "_20_50_80_20")
+                            const std::string& outputDir,
+                            int maxGates = 10,                    // [修改] 默认值放宽到 10，适配多输入
+                            bool enablePhysicalEval = false,
+                            const std::string& workerScratchDir = "");
+
+        SynthesisResult run(const std::string& hexFunc, 
                             const std::vector<double>& inputProbs, 
                             const std::string& probTag,           // [新增] 概率标签 (例如 "_20_50_80_20")
                             const std::string& outputDir,
@@ -71,6 +106,9 @@ namespace fes {
                       const std::string& outputCsv, 
                       const std::string& outputDir,
                       bool enablePhysicalEval = false);           // [新增] 批量物理评估开关
+
+        bool runBatch(const LibraryGenerationConfig& cfg);
+        bool generateLibrary(const LibraryGenerationConfig& cfg);
         
         bool buildABCLocalLibraryFromTopCsv(
             const std::string& topCsvPath,
@@ -86,9 +124,15 @@ namespace fes {
                                   std::vector<double>& current, 
                                   std::vector<std::vector<double>>& results);
 
-        void runAbcToGenerateBaseline(const std::string& hexFunc, const std::string& outBlifPath);
+        void runAbcToGenerateBaseline(const std::string& hexFunc,
+                                      int numInputs,
+                                      const std::string& outBlifPath);
         
         // 1. 准备规格：处理 Hex 长度、补齐概率
+        Specification buildSpecification(
+            const std::string& hexFunc,
+            int numInputs,
+            const std::vector<double>& inputProbs);
         Specification buildSpecification(const std::string& hexFunc, const std::vector<double>& inputProbs);
 
         // 2. Phase 1: 使用 SAT (Kissat) 寻找最小门数
@@ -102,33 +146,51 @@ namespace fes {
         // 4. 后处理：保存文件、打印 Log、验证、评估
         void processResults(SynthesisResult& res, 
                             const CircuitGraph& graph, 
-                            const std::string& outputDir);
+                            const std::string& outputDir,
+                            const std::string& variantName);
 
         // 运行 ABC 评估 BLIF 文件 (对应 Python: analyze_blif_file)
         AbcStats evaluateBlif(const std::string& blifFile);
         
         // 运行 ABC Baseline (对应 Python: analyze_abc_baseline)
-        AbcStats runAbcBaseline(const std::string& hexFunc);
+        AbcStats runAbcBaseline(const std::string& hexFunc, int numInputs);
 
         // 通用命令执行与解析
         AbcStats runAbcCommand(const std::string& cmdScript);
         
-        bool verify(const std::string& hexFunc, const class CircuitGraph& graph);
+        bool verify(const std::string& hexFunc,
+                    int numInputs,
+                    const class CircuitGraph& graph);
     
-        std::vector<std::string> loadTopHexFuncsFromCsv(const std::string& topCsvPath);
+        std::vector<LibraryFunction> loadTopHexFuncsFromCsv(
+            const std::string& topCsvPath,
+            int defaultNumInputs) const;
+        std::vector<LibraryFunction> buildExhaustiveFunctionSet(
+            int numInputs,
+            int numFunctionsToInclude) const;
+        std::vector<LibraryFunction> buildBenchmarkDrivenFunctionSet(
+            const LibraryGenerationConfig& cfg) const;
+        std::vector<std::vector<double>> buildUniformProbPatterns(
+            int numInputs) const;
         std::string probVectorToTag(const std::vector<double>& probs) const;
-        std::string buildRawBlifFromHexFunc(const std::string& hexFunc) const;
-        bool runSingleABCLocalCase(
+        std::string buildRawBlifFromHexFunc(
             const std::string& hexFunc,
+            int numInputs) const;
+        bool runSingleABCLocalCase(
+            const LibraryFunction& func,
             const std::vector<double>& inputProbs,
             const std::string& outputDir,
-            std::ofstream& csvOut);
+            const std::string& tmpBlifPath,
+            std::string* csvLineOut);
         int countNamesInBlif(const std::string& blifPath) const;
 
         bool evaluateCubeMatch(const std::string& cube, int mask, int nInputs) const;
 double evaluateNamesNodeTruth(const std::vector<std::string>& sop, int mask, int nInputs) const;
-uint16_t computeHexFromBlifFragment(const std::string& blifContent) const;
-bool validateBlifImplementsHex(const std::string& blifContent, const std::string& expectedHex) const;
+LutTruthTable computeHexFromBlifFragment(const std::string& blifContent, int numInputs) const;
+bool validateBlifImplementsHex(
+    const std::string& blifContent,
+    const std::string& expectedHex,
+    int numInputs) const;
    
 };
 

@@ -1,1028 +1,1551 @@
 #include "fes/flow/SynthesisFlow.h"
-#include "fes/interfaces/ISolver.h"
-#include "fes/solvers/Z3Solver.h"
-#include "fes/solvers/KissatSolver.h"
-#include "fes/encoders/PatternEncoder.h"
-#include "fes/utils/BlifWriter.h"
-#include "fes/utils/EquivalenceChecker.h"
-#include "fes/core/Specification.h"
 
-#include <iostream>
-#include <fstream>
-#include <sstream>
-#include <chrono>
-#include <memory>
-#include <cstdio>
+#include "fes/core/Types.h"
+#include "fes/core/NpnTransform.h"
+#include "fes/core/Specification.h"
+#include "fes/encoders/PatternEncoder.h"
+#include "fes/interfaces/ISolver.h"
+#include "fes/solvers/KissatSolver.h"
+#include "fes/solvers/Z3Solver.h"
+#include "fes/utils/BenchmarkExtractor.h"
+#include "fes/utils/BlifWriter.h"
+#include "fes/utils/CellLibraryLoader.h"
+#include "fes/utils/EquivalenceChecker.h"
+
+#include <algorithm>
 #include <array>
-#include <bitset>
-#include <map>
+#include <atomic>
+#include <chrono>
 #include <cmath>
-#include <regex>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
-#include <iomanip> // 新增：用于字符串格式化 setfill, setw
+#include <fstream>
+#include <functional>
+#include <iomanip>
+#include <iostream>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <regex>
 #include <set>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <thread>
+#include <tuple>
+#include <utility>
+#include <vector>
+
 namespace fs = std::filesystem;
 
 namespace fes {
 
-    SynthesisFlow::SynthesisFlow(const std::vector<GateType>& lib, 
-                             const std::string& abcPath, 
+namespace {
+
+struct GeneratedLibraryCsvEntry {
+    std::string sortKey;
+    std::string csvLine;
+};
+
+class GeneratedLibrary {
+public:
+    void addEntry(GeneratedLibraryCsvEntry entry) {
+        entries_.push_back(std::move(entry));
+    }
+
+    const std::vector<GeneratedLibraryCsvEntry>& entries() const {
+        return entries_;
+    }
+
+private:
+    std::vector<GeneratedLibraryCsvEntry> entries_;
+};
+
+std::string trimCopy(const std::string& text) {
+    const size_t first = text.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) {
+        return "";
+    }
+
+    const size_t last = text.find_last_not_of(" \t\r\n");
+    return text.substr(first, last - first + 1);
+}
+
+std::string toUpperCopy(std::string text) {
+    std::transform(
+        text.begin(),
+        text.end(),
+        text.begin(),
+        [](unsigned char c) {
+            return static_cast<char>(std::toupper(c));
+        });
+    return text;
+}
+
+std::string shellQuote(const std::string& text) {
+    std::string quoted = "'";
+    for (char c : text) {
+        if (c == '\'') {
+            quoted += "'\\''";
+        } else {
+            quoted += c;
+        }
+    }
+    quoted += "'";
+    return quoted;
+}
+
+std::vector<std::string> parseCsvRow(const std::string& line) {
+    std::vector<std::string> fields;
+    std::string current;
+    bool inQuotes = false;
+
+    for (size_t i = 0; i < line.size(); ++i) {
+        const char c = line[i];
+        if (inQuotes) {
+            if (c == '"') {
+                if (i + 1 < line.size() && line[i + 1] == '"') {
+                    current += '"';
+                    ++i;
+                } else {
+                    inQuotes = false;
+                }
+            } else {
+                current += c;
+            }
+        } else if (c == ',') {
+            fields.push_back(trimCopy(current));
+            current.clear();
+        } else if (c == '"') {
+            inQuotes = true;
+        } else {
+            current += c;
+        }
+    }
+
+    fields.push_back(trimCopy(current));
+    return fields;
+}
+
+bool readLogicalLine(std::istream& is, std::string& outLine) {
+    outLine.clear();
+
+    std::string line;
+    if (!std::getline(is, line)) {
+        return false;
+    }
+    if (!line.empty() && line.back() == '\r') {
+        line.pop_back();
+    }
+    outLine = line;
+
+    while (!outLine.empty()) {
+        const size_t last = outLine.find_last_not_of(" \t\r\n");
+        if (last == std::string::npos) {
+            outLine.clear();
+            break;
+        }
+        if (outLine[last] != '\\') {
+            break;
+        }
+
+        outLine.erase(last);
+        std::string continuation;
+        if (!std::getline(is, continuation)) {
+            break;
+        }
+        if (!continuation.empty() && continuation.back() == '\r') {
+            continuation.pop_back();
+        }
+        outLine += " " + continuation;
+    }
+
+    return true;
+}
+
+LutTruthTable hexToTruthTable(const std::string& hexText) {
+    std::string normalized = trimCopy(hexText);
+    if (normalized.rfind("0x", 0) == 0 || normalized.rfind("0X", 0) == 0) {
+        normalized = normalized.substr(2);
+    }
+    if (normalized.empty()) {
+        return 0;
+    }
+
+    std::stringstream ss;
+    ss << std::hex << normalized;
+    LutTruthTable value = 0;
+    ss >> value;
+    return value;
+}
+
+int inferNumInputsFromHexWidth(const std::string& hexFunc) {
+    const size_t bits = trimCopy(hexFunc).size() * 4;
+    int numInputs = 0;
+    while ((1u << numInputs) < bits) {
+        ++numInputs;
+    }
+    return std::max(1, numInputs);
+}
+
+LutTruthTable truthTableMaskForInputs(int numInputs) {
+    if (numInputs < 0) {
+        return 0;
+    }
+    const int rows = 1 << numInputs;
+    if (rows >= 64) {
+        return ~LutTruthTable{0};
+    }
+    return (LutTruthTable{1} << rows) - 1;
+}
+
+std::string formatHexTruthTable(LutTruthTable tt) {
+    std::ostringstream oss;
+    oss << std::uppercase
+        << std::hex
+        << std::setfill('0')
+        << std::setw(kLutTruthTableHexDigits)
+        << tt;
+    return oss.str();
+}
+
+std::string normalizeHexForInputs(const std::string& hexFunc, int numInputs) {
+    return formatHexTruthTable(
+        hexToTruthTable(hexFunc) & truthTableMaskForInputs(numInputs));
+}
+
+int resolveGateTypeIndex(const std::string& gateType,
+                         const std::vector<GateType>& library) {
+    if (gateType.empty()) {
+        return -1;
+    }
+
+    const size_t pos = gateType.find_last_of('_');
+    if (pos != std::string::npos && pos + 1 < gateType.size()) {
+        try {
+            const int idx = std::stoi(gateType.substr(pos + 1));
+            if (idx >= 0 && idx < static_cast<int>(library.size())) {
+                return idx;
+            }
+        } catch (...) {
+        }
+    }
+
+    for (size_t i = 0; i < library.size(); ++i) {
+        if (library[i].name == gateType) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+AbcStats convertPpaToAbcStats(const PPAResult& ppa) {
+    AbcStats stats;
+    stats.area = ppa.area;
+    stats.power = ppa.power_total;
+    stats.gates = -1;
+    stats.valid = ppa.valid;
+    return stats;
+}
+
+int parseInputIndexFromName(const std::string& name) {
+    size_t pos = name.size();
+    while (pos > 0 && std::isdigit(static_cast<unsigned char>(name[pos - 1]))) {
+        --pos;
+    }
+    if (pos == name.size()) {
+        return -1;
+    }
+
+    try {
+        return std::stoi(name.substr(pos));
+    } catch (...) {
+        return -1;
+    }
+}
+
+std::vector<StandardCell> maybeLoadStandardCells(const std::string& libPath,
+                                                 const std::string& outputDir,
+                                                 int lutInputs) {
+    const fs::path libFile(libPath);
+    std::string ext = toUpperCopy(libFile.extension().string());
+    if (ext != ".LIB") {
+        return {};
+    }
+
+    fs::path csvPath = fs::path(outputDir);
+    if (csvPath.empty()) {
+        csvPath = fs::current_path();
+    }
+    csvPath /= "parsed_cells_k" + std::to_string(lutInputs) + ".csv";
+
+    return CellLibraryLoader::loadOrGenerate(
+        csvPath.string(), libPath, lutInputs);
+}
+
+}  // namespace
+
+SynthesisFlow::SynthesisFlow(const std::vector<GateType>& lib,
+                             const std::string& abcPath,
                              const std::string& libPath,
                              const std::string& pythonScriptPath)
-    : library_(lib), 
-      abcPath_(abcPath), 
-      libPath_(libPath), 
-      verifier_(pythonScriptPath) 
-    {}
+    : library_(lib),
+      abcPath_(abcPath),
+      libPath_(libPath),
+      verifier_(pythonScriptPath) {}
 
-    static uint64_t hexToInt(const std::string& h) {
-        uint64_t r; std::stringstream ss; ss << std::hex << h; ss >> r; return r;
+void SynthesisFlow::generateProbPatterns(
+    int numInputs,
+    const std::vector<double>& levels,
+    std::vector<double>& current,
+    std::vector<std::vector<double>>& results) {
+    if (static_cast<int>(current.size()) == numInputs) {
+        results.push_back(current);
+        return;
     }
 
-    static AbcStats convertPpaToAbcStats(const PPAResult& ppa) {
-        AbcStats stats;
-        if (ppa.valid) {
-            stats.power = ppa.power_total; 
-            stats.area = ppa.area;         
-            stats.gates = -1;              
-            stats.valid = true;
-        } else {
-            stats.power = -1.0;
-            stats.valid = false;
-        }
-        return stats;
+    for (double level : levels) {
+        current.push_back(level);
+        generateProbPatterns(numInputs, levels, current, results);
+        current.pop_back();
+    }
+}
+
+void SynthesisFlow::runAbcToGenerateBaseline(const std::string& hexFunc,
+                                             int numInputs,
+                                             const std::string& outBlifPath) {
+    const fs::path outPath(outBlifPath);
+    if (outPath.has_parent_path()) {
+        fs::create_directories(outPath.parent_path());
     }
 
-    // =========================================================
-    // [新增] 递归生成多输入概率组合 (Stratification Pattern Generator)
-    // =========================================================
-    void SynthesisFlow::generateProbPatterns(int numInputs, 
-                                             const std::vector<double>& levels, 
-                                             std::vector<double>& current, 
-                                             std::vector<std::vector<double>>& results) {
-        if (current.size() == (size_t)numInputs) {
-            results.push_back(current);
+    const fs::path rawPath =
+        outPath.parent_path() / (outPath.stem().string() + "_raw.blif");
+    {
+        std::ofstream rawStream(rawPath);
+        if (!rawStream.is_open()) {
+            std::cerr << "[ABC] Failed to create raw BLIF: " << rawPath << "\n";
             return;
         }
-        for (double level : levels) {
-            current.push_back(level);
-            generateProbPatterns(numInputs, levels, current, results);
-            current.pop_back(); // 回溯
-        }
+        rawStream << buildRawBlifFromHexFunc(hexFunc, numInputs);
     }
 
-    void SynthesisFlow::runAbcToGenerateBaseline(const std::string& hexFunc, const std::string& outBlifPath) {
-        std::stringstream ss;
-        ss << "read_genlib " << libPath_ << "; ";
-        ss << "read_truth " << hexFunc << "; ";
-        ss << "strash; balance; rewrite; rewrite -z; balance; rewrite -z; balance; ";
-        ss << "map -a; "; 
-        ss << "write_blif " << outBlifPath;
+    const std::string script =
+        "read_genlib " + libPath_ +
+        "; read_blif " + rawPath.string() +
+        "; strash; balance; rewrite; rewrite -z; balance; rewrite -z; "
+          "balance; map -a; write_blif " + outBlifPath;
+    const std::string cmd =
+        abcPath_ + " -c \"" + script + "\" > /dev/null 2>&1";
 
-        std::string fullCmd = abcPath_ + " -c \"" + ss.str() + "\" > /dev/null 2>&1";
-        int ret = system(fullCmd.c_str());
-        if (ret != 0) {
-            std::cerr << "[Error] ABC failed to generate baseline for: " << hexFunc << std::endl;
-        }
+    if (std::system(cmd.c_str()) != 0) {
+        std::cerr << "[ABC] Baseline generation failed for "
+                  << hexFunc << "\n";
     }
+}
 
-    // =========================================================
-    // 核心综合与评估流程 (分离建库与评测)
-    // =========================================================
-    SynthesisResult SynthesisFlow::run(const std::string& hexFunc, 
-                                       const std::vector<double>& inputProbs, 
-                                       const std::string& probTag,
-                                       const std::string& outputDir, 
-                                       int maxGates,
-                                       bool enablePhysicalEval) {
-        SynthesisResult res;
-        res.hexFunc = hexFunc; 
-        res.success = false;
-        
-        // 唯一的电路变体标识符，例如：0888_20_50_80_20
-        std::string variantName = hexFunc + probTag;
+SynthesisResult SynthesisFlow::run(const std::string& hexFunc,
+                                   int numInputs,
+                                   const std::vector<double>& inputProbs,
+                                   const std::string& probTag,
+                                   const std::string& outputDir,
+                                   int maxGates,
+                                   bool enablePhysicalEval,
+                                   const std::string& workerScratchDir) {
+    SynthesisResult res{};
+    res.hexFunc = normalizeHexForInputs(hexFunc, numInputs);
+    res.numInputs = numInputs;
+    res.success = false;
+    res.ponoGates = -1;
+    res.internalCost = -1.0;
+    res.runtimeMs = 0.0;
 
-        // --- 准备工作目录 ---
-        fs::path funcDir = fs::path(outputDir) / "detailed_infos" / hexFunc;
-        if (!fs::exists(funcDir)) fs::create_directories(funcDir);
+    const std::string variantName = res.hexFunc + probTag;
+    const auto started = std::chrono::steady_clock::now();
+    auto finalize = [&]() -> SynthesisResult {
+        res.runtimeMs =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - started)
+                .count();
+        return res;
+    };
 
-        // -----------------------------------------------------
-        // Step 1: PONO 逻辑生成 (SAT Minimization)
-        // -----------------------------------------------------
-        auto start = std::chrono::high_resolution_clock::now();
-        Specification spec = buildSpecification(hexFunc, inputProbs);
-        int minGates = runMinimizationPhase(spec, maxGates);
-
-        if (minGates == -1) {
+    try {
+        Specification spec = buildSpecification(res.hexFunc, numInputs, inputProbs);
+        const int minGates = runMinimizationPhase(spec, maxGates);
+        if (minGates < 0) {
             res.errorMsg = "UNSAT within max gates";
-            return res;
+            return finalize();
         }
 
-        // -----------------------------------------------------
-        // Step 2: PONO 结构优化 (Z3/OMT)
-        // -----------------------------------------------------
-        auto [optSuccess, graph, cost] = runOptimizationPhase(spec, minGates);
+        auto [optSuccess, graph, internalCost] =
+            runOptimizationPhase(spec, minGates);
         if (!optSuccess) {
-            res.errorMsg = "Z3 Optimization Failed";
-            return res;
+            res.errorMsg = "Z3 optimization failed";
+            return finalize();
         }
 
         if (verifyEnabled_) {
             EquivalenceChecker cec(library_);
-            auto cecRes = cec.verifyAgainstHex(hexFunc, graph);
-            if (!cecRes.equivalent) {
-                std::cerr << "[CEC] FAIL " << hexFunc << probTag
-                          << " -> " << cecRes.message << std::endl;
-                res.errorMsg = "CEC: " + cecRes.message;
-                return res;
+            const auto cecResult = cec.verifyAgainstTruthTable(
+                hexToTruthTable(res.hexFunc) & truthTableMaskForInputs(numInputs),
+                numInputs,
+                graph);
+            if (!cecResult.equivalent) {
+                res.errorMsg = "CEC: " + cecResult.message;
+                return finalize();
             }
-            std::cout << "[CEC] OK " << hexFunc << probTag << std::endl;
         }
 
         res.ponoGates = minGates;
-        res.internalCost = cost;
-        
-        // --- 库文件导出 ---
-        fs::path ponoBlifPath = funcDir / ("pono_" + variantName + ".blif");
-        BlifWriter::write(ponoBlifPath.string(), "pono_design", graph, library_);
+        res.internalCost = internalCost;
 
-        // 临时使用 variantName 欺骗 processResults 写入正确的名字
-        std::string originalHex = res.hexFunc;
-        res.hexFunc = variantName; 
-        processResults(res, graph, outputDir);
-        res.hexFunc = originalHex; // 恢复
+        processResults(res, graph, outputDir, variantName);
+        if (!res.errorMsg.empty()) {
+            return finalize();
+        }
 
-        // -----------------------------------------------------
-        // Step 3: [可选] 物理综合评估 (Innovus) 
-        // 只有当你想单独跑一组数据看真实效果时，才激活这部分
-        // -----------------------------------------------------
         if (enablePhysicalEval) {
-            // 科学计算真实翻转率 Activity: 2 * P * (1 - P)
-            std::vector<double> acts(inputProbs.size());
+            fs::path scratchDir = workerScratchDir.empty()
+                                      ? (fs::path(outputDir) / "tmp_eval")
+                                      : fs::path(workerScratchDir);
+            fs::create_directories(scratchDir);
+
+            const fs::path ponoBlif =
+                fs::path(outputDir) / "detailed_infos" / res.hexFunc /
+                ("pono_" + variantName + ".blif");
+            const fs::path baselineBlif =
+                scratchDir / ("baseline_" + variantName + ".blif");
+
+            runAbcToGenerateBaseline(res.hexFunc, numInputs, baselineBlif.string());
+
+            std::vector<double> acts(inputProbs.size(), 0.0);
             for (size_t i = 0; i < inputProbs.size(); ++i) {
                 acts[i] = 2.0 * inputProbs[i] * (1.0 - inputProbs[i]);
             }
 
-            std::string baselineBlif = (funcDir / ("baseline_abc_" + variantName + ".blif")).string();
-            runAbcToGenerateBaseline(hexFunc, baselineBlif);
-
-            std::cout << "  - Evaluating Physical Baseline (Innovus)..." << std::endl;
-            res.baselineStats = convertPpaToAbcStats(verifier_.getPPAResult(baselineBlif, inputProbs, acts));
-            
-            std::cout << "  - Evaluating PONO Optimized Physical (Innovus)..." << std::endl;
-            res.optStats = convertPpaToAbcStats(verifier_.getPPAResult(ponoBlifPath.string(), inputProbs, acts));
-            
+            res.baselineStats = convertPpaToAbcStats(
+                verifier_.getPPAResult(baselineBlif.string(), inputProbs, acts));
+            res.optStats = convertPpaToAbcStats(
+                verifier_.getPPAResult(ponoBlif.string(), inputProbs, acts));
             res.success = res.baselineStats.valid && res.optStats.valid;
-            if (!res.success) res.errorMsg = "Innovus Evaluation Failed";
+            if (!res.success) {
+                res.errorMsg = "Innovus evaluation failed";
+            }
         } else {
-            // 建库模式下，Z3跑通即视为完全成功
-            res.success = true;
+            res.success = res.errorMsg.empty();
         }
-
-        auto end = std::chrono::high_resolution_clock::now();
-        res.runtimeMs = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-
-        return res;
+    } catch (const std::exception& e) {
+        res.errorMsg = e.what();
     }
 
-    // =========================================================
-    // 辅助函数实现 (Helper Implementations)
-    // =========================================================
-    Specification SynthesisFlow::buildSpecification(const std::string& hexFunc, const std::vector<double>& inputProbs) {
-        int numInputs = 0;
-        size_t numBits = hexFunc.length() * 4;
-        while ((1u << numInputs) < numBits) numInputs++;
-        
-        if ((1u << numInputs) != numBits && numBits != 0) {
-            std::cerr << "[Warning] Hex string length implies fractional inputs?" << std::endl;
-        }
-        
-        std::vector<double> currentProbs = inputProbs;
-        if (currentProbs.size() < (size_t)numInputs) currentProbs.resize(numInputs, 0.5);
-        
-        Specification spec(numInputs, 1);
-        spec.setTruthTable(hexToInt(hexFunc)); 
-        spec.setInputProbabilities(currentProbs);
-        return spec;
-    }
+    return finalize();
+}
 
-    int SynthesisFlow::runMinimizationPhase(const Specification& spec, int maxGates) {
-        for (int n = 1; n <= maxGates; ++n) {
-            auto sat = std::make_unique<KissatSolver>();
-            sat->setTimeLimit(10000); 
-            PatternEncoder enc(n);
-            if (!enc.encode(sat.get(), spec, library_)) continue;
-            if (sat->solve() == SolveStatus::SAT) return n;
-        }
-        return -1;
-    }
+SynthesisResult SynthesisFlow::run(const std::string& hexFunc,
+                                   const std::vector<double>& inputProbs,
+                                   const std::string& probTag,
+                                   const std::string& outputDir,
+                                   int maxGates,
+                                   bool enablePhysicalEval) {
+    return run(
+        hexFunc,
+        inferNumInputsFromHexWidth(hexFunc),
+        inputProbs,
+        probTag,
+        outputDir,
+        maxGates,
+        enablePhysicalEval);
+}
 
-    std::tuple<bool, CircuitGraph, double> SynthesisFlow::runOptimizationPhase(const Specification& spec, int numGates) {
-        auto z3 = std::make_unique<Z3Solver>();
-        z3->setTimeLimit(60000); 
-        PatternEncoder enc(numGates);
-        enc.encode(z3.get(), spec, library_); 
-        SolveStatus status = z3->solve();
+void SynthesisFlow::runBatch(const std::string& inputFile,
+                             const std::string& outputCsv,
+                             const std::string& outputDir,
+                             bool enablePhysicalEval) {
+    LibraryGenerationConfig cfg;
+    cfg.mode = LibraryGenerationMode::kFromCsv;
+    cfg.lutInputs = kLutMaxInputs;
+    cfg.inputCsv = inputFile;
+    cfg.outputCsv = outputCsv;
+    cfg.outputDir = outputDir;
+    cfg.enablePhysicalEval = enablePhysicalEval;
+    runBatch(cfg);
+}
 
-        if (status == SolveStatus::OPTIMAL || status == SolveStatus::SAT) {
-            return {true, enc.decode(z3.get()), z3->getOptimizationResult()};
-        }
-        return {false, CircuitGraph(), 0.0};
-    }
-
-    void SynthesisFlow::processResults(SynthesisResult& res, const CircuitGraph& graph, const std::string& outputDir) {
-        std::string variantName = res.hexFunc;
-        std::string baseHex = variantName.substr(0, variantName.find('_'));
-
-        fs::path funcDir = fs::path(outputDir) / "detailed_infos" / baseHex;
-        if (!fs::exists(funcDir)) fs::create_directories(funcDir);
-
-        fs::path txtPath = funcDir / ("pono_" + variantName + "_struct.txt");
-        std::ofstream txtFile(txtPath);
-        
-        if (txtFile.is_open()) {
-            txtFile << "Variant: " << res.hexFunc << "\n";
-            txtFile << "Gates: " << res.ponoGates << "\n";
-            txtFile << "Cost(Internal Rp): " << res.internalCost << "\n";
-            if (res.optStats.valid) {
-                txtFile << "Physical Power (Innovus): " << res.optStats.power << " mW\n";
-                txtFile << "Physical Area (Innovus): " << res.optStats.area << " um^2\n";
-            }
-            txtFile << "----------------------------------------\n";
-            
-            for (const auto& nodePair : graph.getAllNodes()) {
-                const Node& node = nodePair.second;
-                if (node.type == NodeType::GATE) {
-                    // ==========================================
-                    // 💡 修复点 1: 动态解析门类型，安全打印 struct.txt
-                    // ==========================================
-                    size_t last_underscore = node.gateType.find_last_of('_');
-                    if (last_underscore == std::string::npos || last_underscore + 1 >= node.gateType.length()) {
-                        txtFile << node.name << " = CONST0()\n";
-                        continue;
-                    }
-                    
-                    int typeIdx = -1;
-                    try { typeIdx = std::stoi(node.gateType.substr(last_underscore + 1)); }
-                    catch (...) { txtFile << node.name << " = CONST0()\n"; continue; }
-                    
-                    if (typeIdx < 0 || typeIdx >= (int)library_.size()) continue;
-
-                    const auto& realGate = library_[typeIdx];
-                    txtFile << node.name << " = " << realGate.name << "(";
-                    
-                    // 只打印有效输入数量
-                    int limit = std::min((int)node.fanins.size(), realGate.numInputs);
-                    for (int i = 0; i < limit; ++i) {
-                        int fid = node.fanins[i];
-                        if (graph.getAllNodes().count(fid)) txtFile << graph.getNode(fid).name;
-                        else txtFile << "UNK";
-                        if (i < limit - 1) txtFile << ", ";
-                    }
-                    txtFile << ")\n";
-                }
-            }
-            txtFile.close();
+bool SynthesisFlow::runBatch(const LibraryGenerationConfig& cfg) {
+    try {
+        const auto loadedCells =
+            maybeLoadStandardCells(libPath_, cfg.outputDir, cfg.lutInputs);
+        if (!loadedCells.empty()) {
+            std::cout << "[Batch] Loaded " << loadedCells.size()
+                      << " standard cells for K<=" << cfg.lutInputs << "\n";
         }
 
-        std::cout << "\n  [DEBUG NETLIST] Solved with " << res.ponoGates << " gates. (Saved to " << txtPath << ")\n";
-
-        if (!verify(res.hexFunc.substr(0, res.hexFunc.find('_')), graph)) {
-            res.success = false;
-            res.errorMsg = "Verification Failed";
-            std::cerr << "[Error] Internal verification failed for " << res.hexFunc << std::endl;
-        }
-    }
-
-    // ==========================================
-    // 各种ABC调用保留 (供评测和其他流程使用)
-    // ==========================================
-    AbcStats SynthesisFlow::runAbcCommand(const std::string& cmdScript) {
-        AbcStats stats;
-        std::stringstream cmd;
-        cmd << abcPath_ << " -c \"" << cmdScript << "\" 2>&1";
-
-        std::string output = "";
-        std::array<char, 128> buffer;
-        std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(cmd.str().c_str(), "r"), pclose);
-        if (!pipe) return stats;
-        while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) output += buffer.data();
-
-        try {
-            std::regex re_gates(R"((?:nd|nodes)\s*=\s*(\d+))", std::regex::icase);
-            std::regex re_area(R"(area\s*=\s*([\d\.]+))", std::regex::icase);
-            std::regex re_power(R"(power\s*=\s*([\d\.]+))", std::regex::icase);
-            
-            auto gates_begin = std::sregex_iterator(output.begin(), output.end(), re_gates);
-            for (std::sregex_iterator i = gates_begin; i != std::sregex_iterator(); ++i) 
-                if ((*i).size() > 1) stats.gates = std::stoi((*i).str(1));
-
-            auto area_begin = std::sregex_iterator(output.begin(), output.end(), re_area);
-            for (std::sregex_iterator i = area_begin; i != std::sregex_iterator(); ++i) 
-                if ((*i).size() > 1) stats.area = std::stod((*i).str(1));
-
-            auto power_begin = std::sregex_iterator(output.begin(), output.end(), re_power);
-            for (std::sregex_iterator i = power_begin; i != std::sregex_iterator(); ++i) 
-                if ((*i).size() > 1) stats.power = std::stod((*i).str(1));
-
-        } catch (...) { /* 静默处理 */ }
-        return stats;
-    }
-
-    AbcStats SynthesisFlow::evaluateBlif(const std::string& blifFile) {
-        std::stringstream ss;
-        ss << "read_genlib " << libPath_ << "; "; 
-        ss << "read_blif " << blifFile << "; ";
-        ss << "ps -p";
-        return runAbcCommand(ss.str());
-    }
-
-    AbcStats SynthesisFlow::runAbcBaseline(const std::string& hexFunc) {
-        std::stringstream ss;
-        ss << "read_genlib " << libPath_ << "; ";
-        ss << "read_truth " << hexFunc << "; ";
-        ss << "strash; balance; rewrite; rewrite -z; balance; rewrite -z; balance; map -a; ps -p";
-        return runAbcCommand(ss.str());
-    }
-
-    bool SynthesisFlow::verify(const std::string& hexFunc, const CircuitGraph& graph) {
-        int numInputs = (int)graph.getInputs().size();
-        if (numInputs == 0) numInputs = 4;
-
-        uint64_t targetTruthTable = hexToInt(hexFunc);
-        int numPatterns = 1 << numInputs;
-        
-        for (int i = 0; i < numPatterns; ++i) {
-            std::map<int, bool> nodeValues;
-            for (int bit = 0; bit < numInputs; ++bit) nodeValues[bit] = (i >> bit) & 1;
-
-            for (const auto& nodePair : graph.getAllNodes()) {
-                const Node& node = nodePair.second;
-                if (node.type == NodeType::GATE) {
-                    
-                    // ==========================================
-                    // 💡 修复点 2: 验证器兼容幽灵门 (将其模拟为 false/0)
-                    // ==========================================
-                    size_t last_underscore = node.gateType.find_last_of('_');
-                    if (last_underscore == std::string::npos || last_underscore + 1 >= node.gateType.length()) {
-                        nodeValues[node.id] = false; // 幽灵门等效为逻辑 0
-                        continue;
-                    }
-
-                    int typeIdx = -1;
-                    try { typeIdx = std::stoi(node.gateType.substr(last_underscore + 1)); }
-                    catch (...) { nodeValues[node.id] = false; continue; }
-                    
-                    if (typeIdx < 0 || typeIdx >= (int)library_.size()) {
-                        nodeValues[node.id] = false; continue;
-                    }
-
-                    const GateType& gateDef = library_[typeIdx];
-                    int ttIndex = 0;
-                    int limit = std::min(gateDef.numInputs, (int)node.fanins.size()); 
-                    
-                    for (int k = 0; k < limit; ++k) {
-                        int faninId = node.fanins[k];
-                        if (nodeValues[faninId]) ttIndex |= (1 << k); 
-                    }
-                    nodeValues[node.id] = (gateDef.truthTable >> ttIndex) & 1;
-                }
-            }
-            if (graph.getOutputs().empty()) return false;
-            if (nodeValues[graph.getOutputs()[0]] != ((targetTruthTable >> i) & 1)) return false;
-        }
-        return true;
-    }
-
-    // ==========================================
-    // 智能批量建库 (动态推导 N, 遍历生成)
-    // ==========================================
-    void SynthesisFlow::runBatch(const std::string& inputFile, 
-                                 const std::string& outputCsv, 
-                                 const std::string& outputDir,
-                                 bool enablePhysicalEval) {
-        std::ifstream inFile(inputFile);
-        if (!inFile.is_open()) return;
-        
-        // =========================================================
-        // [新增] 1. 断点续传：读取已存在的 CSV，记录跑过的变体
-        // =========================================================
-        std::set<std::string> completedVariants;
-        bool csvExists = fs::exists(outputCsv);
-        
-        if (csvExists) {
-            std::ifstream existingCsv(outputCsv);
-            std::string line;
-            if (std::getline(existingCsv, line)) { /* 跳过已有的 Header */ }
-            while (std::getline(existingCsv, line)) {
-                if (line.empty()) continue;
-                std::stringstream ss(line);
-                std::string hex, tag;
-                std::getline(ss, hex, ','); // 第一列: HexFunc
-                std::getline(ss, tag, ','); // 第二列: ProbPattern
-                
-                // 将 hex 和 tag 拼接作为唯一标识符加入集合
-                completedVariants.insert(hex + tag);
-            }
-            std::cout << "[Batch] Resume mode: Found " << completedVariants.size() 
-                      << " already completed variants in " << outputCsv << std::endl;
+        std::vector<LibraryFunction> functions;
+        switch (cfg.mode) {
+            case LibraryGenerationMode::kFromCsv:
+                functions = loadTopHexFuncsFromCsv(cfg.inputCsv, cfg.lutInputs);
+                break;
+            case LibraryGenerationMode::kExhaustiveNpn:
+                functions = buildExhaustiveFunctionSet(
+                    cfg.lutInputs, cfg.numFunctionsToInclude);
+                break;
+            case LibraryGenerationMode::kBenchmarkDriven:
+                functions = buildBenchmarkDrivenFunctionSet(cfg);
+                break;
         }
 
-        // =========================================================
-        // [修改] 2. 以追加模式 (std::ios::app) 打开输出文件
-        // =========================================================
-        std::ofstream outFile(outputCsv, std::ios::app);
-        if (!outFile.is_open()) return;
-
-        // 如果是新创建的文件，才需要写入表头
-        if (!csvExists) {
-            outFile << "HexFunc,ProbPattern,Success,Gates,InternalCost,RuntimeMs";
-            if (enablePhysicalEval) {
-                outFile << ",Base_Power(mW),Opt_Power(mW),Power_Impr(%)";
-            }
-            outFile << ",Error\n";
+        if (functions.empty()) {
+            std::cerr << "[Batch] No functions selected.\n";
+            return false;
         }
 
-        std::string line;
-        if (std::getline(inFile, line)) { /* 跳过输入文件的 Header */ }
+        if (cfg.numFunctionsToInclude > 0 &&
+            static_cast<int>(functions.size()) > cfg.numFunctionsToInclude) {
+            functions.resize(cfg.numFunctionsToInclude);
+        }
 
-        // --- 定义概率离散挡位 ---
-        std::vector<double> levels = {0.2, 0.5, 0.8}; 
+        fs::create_directories(cfg.outputDir);
+        fs::create_directories(fs::path(cfg.outputDir) / "detailed_infos");
+        fs::create_directories("tmp_eval");
 
-        while (std::getline(inFile, line)) {
-            if (line.empty() || line[0] == '#') continue;
-            if (!line.empty() && line.back() == '\r') line.pop_back();
-            while (!line.empty() && std::isspace(line.back())) line.pop_back();
-            if (line.empty()) continue;
+        GeneratedLibrary m_library;
+        std::mutex libraryMutex;
+        std::mutex logMutex;
+        std::atomic<size_t> nextIndex{0};
+        std::atomic<int> successCount{0};
+        std::atomic<int> failureCount{0};
 
-            std::stringstream ss(line);
-            std::string hexFunc;
-            
-            if (std::getline(ss, hexFunc, ',')) {
-                hexFunc.erase(0, hexFunc.find_first_not_of(" \t\r\n"));
-                hexFunc.erase(hexFunc.find_last_not_of(" \t\r\n") + 1);
-            } else continue;
+        const unsigned hw = std::max(1u, std::thread::hardware_concurrency());
+        const unsigned threadCount = std::min<unsigned>(
+            hw, std::max<unsigned>(1u, static_cast<unsigned>(functions.size())));
 
-            // --- 自动推断当前真值表的输入端数量 N ---
-            int numBits = hexFunc.length() * 4;
-            int numInputs = 0;
-            while ((1u << numInputs) < (unsigned)numBits) numInputs++;
-
-            // --- 递归生成对应 N 输入的所有概率组合 ---
-            std::vector<std::vector<double>> probPatterns;
-            std::vector<double> currentPattern;
-            for(int i = 1; i <= 9; i++){
-                double t = 0.1 * i;
-                probPatterns.push_back({t, t, t, t});
-            }
-            // generateProbPatterns(numInputs, levels, currentPattern, probPatterns);
-
-            std::cout << "\n[Batch] Loaded " << hexFunc << " (" << numInputs 
-                      << " inputs). Checking " << probPatterns.size() << " variants..." << std::endl;
-
-            for (const auto& probs : probPatterns) {
-                // 格式化标识符 tag (例: _20_50_80_20)
-                std::stringstream probStr;
-                for (double p : probs) {
-                    probStr << "_" << std::setw(2) << std::setfill('0') << static_cast<int>(p * 100);
-                }
-                std::string probTag = probStr.str();
-
-                // =========================================================
-                // [新增] 3. 检查是否已经生成过，如果是则跳过
-                // =========================================================
-                std::string variantId = hexFunc + probTag;
-                if (completedVariants.count(variantId)) {
-                    std::cout << "  -> [SKIP] Variant " << probTag << " already processed." << std::endl;
-                    continue; 
+        auto worker = [&]() {
+            while (true) {
+                const size_t index = nextIndex.fetch_add(1);
+                if (index >= functions.size()) {
+                    break;
                 }
 
-                std::cout << "  -> Processing variant " << probTag << "... " << std::flush;
-                
-                SynthesisResult res = run(hexFunc, probs, probTag, outputDir, 10, enablePhysicalEval);
-                
-                std::cout << (res.success ? "OK" : "FAIL") << std::endl;
+                const LibraryFunction& func = functions[index];
+                const auto probPatterns = buildUniformProbPatterns(func.numInputs);
 
-                // 写入数据
-                outFile << res.hexFunc << "," << probTag << ","
+                {
+                    std::lock_guard<std::mutex> lock(logMutex);
+                    std::cout << "[Batch] Synthesizing " << func.hexFunc
+                              << " (K=" << func.numInputs
+                              << ", freq=" << func.frequency << ")\n";
+                }
+
+                for (const auto& inputProbs : probPatterns) {
+                    const std::string probTag = probVectorToTag(inputProbs);
+                    const std::string variantName = func.hexFunc + probTag;
+                    SynthesisResult res = run(
+                        func.hexFunc,
+                        func.numInputs,
+                        inputProbs,
+                        probTag,
+                        cfg.outputDir,
+                        10,
+                        cfg.enablePhysicalEval,
+                        (fs::path(cfg.outputDir) / "tmp_eval").string());
+
+                    std::ostringstream row;
+                    row << res.hexFunc << "," << probTag << ","
                         << (res.success ? "true" : "false") << ","
                         << res.ponoGates << ","
                         << res.internalCost << ","
                         << res.runtimeMs;
+                    if (cfg.enablePhysicalEval) {
+                        const double improvement =
+                            (res.baselineStats.power > 0.0 && res.optStats.valid)
+                                ? (res.baselineStats.power - res.optStats.power) /
+                                      res.baselineStats.power * 100.0
+                                : 0.0;
+                        row << "," << res.baselineStats.power
+                            << "," << res.optStats.power
+                            << "," << improvement;
+                    }
+                    row << "," << res.errorMsg << "\n";
 
-                if (enablePhysicalEval) {
-                    double impr = (res.baselineStats.power > 1e-9) ? 
-                        (res.baselineStats.power - res.optStats.power) / res.baselineStats.power * 100.0 : 0.0;
-                    outFile << "," << res.baselineStats.power << "," << res.optStats.power << "," << impr;
+                    {
+                        std::lock_guard<std::mutex> lock(libraryMutex);
+                        m_library.addEntry({variantName, row.str()});
+                    }
+
+                    if (res.success) {
+                        ++successCount;
+                    } else {
+                        ++failureCount;
+                    }
                 }
-
-                outFile << "," << res.errorMsg << "\n";
-                outFile.flush(); // 实时落盘
             }
+        };
+
+        std::vector<std::thread> workers;
+        workers.reserve(threadCount);
+        for (unsigned i = 0; i < threadCount; ++i) {
+            workers.emplace_back(worker);
         }
-        std::cout << "[Batch] Library generation complete. Data saved to " << outputCsv << std::endl;
+        for (auto& thread : workers) {
+            thread.join();
+        }
+
+        std::vector<GeneratedLibraryCsvEntry> rows = m_library.entries();
+        std::sort(
+            rows.begin(),
+            rows.end(),
+            [](const GeneratedLibraryCsvEntry& lhs,
+               const GeneratedLibraryCsvEntry& rhs) {
+                return lhs.sortKey < rhs.sortKey;
+            });
+
+        std::ofstream out(cfg.outputCsv);
+        if (!out.is_open()) {
+            std::cerr << "[Batch] Failed to open output CSV: "
+                      << cfg.outputCsv << "\n";
+            return false;
+        }
+
+        out << "HexFunc,ProbPattern,Success,Gates,InternalCost,RuntimeMs";
+        if (cfg.enablePhysicalEval) {
+            out << ",Base_Power(mW),Opt_Power(mW),Power_Impr(%)";
+        }
+        out << ",Error\n";
+        for (const auto& row : rows) {
+            out << row.csvLine;
+        }
+
+        std::cout << "[Batch] Done. Functions=" << functions.size()
+                  << ", Variants=" << rows.size()
+                  << ", Success=" << successCount.load()
+                  << ", Fail=" << failureCount.load()
+                  << ", CSV=" << cfg.outputCsv << "\n";
+        return successCount.load() > 0;
+    } catch (const std::exception& e) {
+        std::cerr << "[Batch] Exception: " << e.what() << "\n";
+        return false;
+    }
+}
+
+bool SynthesisFlow::generateLibrary(const LibraryGenerationConfig& cfg) {
+    return runBatch(cfg);
+}
+
+bool SynthesisFlow::buildABCLocalLibraryFromTopCsv(
+    const std::string& topCsvPath,
+    const std::string& outputDir) {
+    auto functions = loadTopHexFuncsFromCsv(topCsvPath, kLutMaxInputs);
+    if (functions.empty()) {
+        std::cerr << "[ABC-LIB] No functions loaded from " << topCsvPath << "\n";
+        return false;
     }
 
-    std::string SynthesisFlow::buildRawBlifFromHexFunc(const std::string& hexFunc) const {
-    unsigned value = 0;
-    std::stringstream ss;
-    ss << std::hex << hexFunc;
-    ss >> value;
+    const auto loadedCells =
+        maybeLoadStandardCells(libPath_, outputDir, kLutMaxInputs);
+    if (!loadedCells.empty()) {
+        std::cout << "[ABC-LIB] Loaded " << loadedCells.size()
+                  << " standard cells for K<=" << kLutMaxInputs << "\n";
+    }
+
+    fs::create_directories(outputDir);
+    fs::create_directories(fs::path(outputDir) / "detailed_infos");
+    fs::create_directories("tmp_eval");
+
+    GeneratedLibrary m_library;
+    std::mutex libraryMutex;
+    std::mutex logMutex;
+    std::atomic<size_t> nextIndex{0};
+    std::atomic<int> totalCases{0};
+    std::atomic<int> successCases{0};
+
+    const unsigned hw = std::max(1u, std::thread::hardware_concurrency());
+    const unsigned threadCount = std::min<unsigned>(
+        hw, std::max<unsigned>(1u, static_cast<unsigned>(functions.size())));
+
+    auto worker = [&]() {
+        while (true) {
+            const size_t index = nextIndex.fetch_add(1);
+            if (index >= functions.size()) {
+                break;
+            }
+
+            const LibraryFunction& func = functions[index];
+            const auto probPatterns = buildUniformProbPatterns(func.numInputs);
+
+            {
+                std::lock_guard<std::mutex> lock(logMutex);
+                std::cout << "[ABC-LIB] Processing " << func.hexFunc
+                          << " (K=" << func.numInputs << ")\n";
+            }
+
+            for (const auto& inputProbs : probPatterns) {
+                ++totalCases;
+
+                std::string tmpBlif =
+                    "tmp_eval/thread_" +
+                    std::to_string(
+                        std::hash<std::thread::id>{}(std::this_thread::get_id())) +
+                    ".blif";
+
+                std::string csvLine;
+                const bool ok = runSingleABCLocalCase(
+                    func, inputProbs, outputDir, tmpBlif, &csvLine);
+                if (ok) {
+                    ++successCases;
+                }
+
+                {
+                    std::lock_guard<std::mutex> lock(libraryMutex);
+                    m_library.addEntry(
+                        {func.hexFunc + probVectorToTag(inputProbs), csvLine});
+                }
+            }
+        }
+    };
+
+    std::vector<std::thread> workers;
+    workers.reserve(threadCount);
+    for (unsigned i = 0; i < threadCount; ++i) {
+        workers.emplace_back(worker);
+    }
+    for (auto& thread : workers) {
+        thread.join();
+    }
+
+    std::vector<GeneratedLibraryCsvEntry> rows = m_library.entries();
+    std::sort(
+        rows.begin(),
+        rows.end(),
+        [](const GeneratedLibraryCsvEntry& lhs,
+           const GeneratedLibraryCsvEntry& rhs) {
+            return lhs.sortKey < rhs.sortKey;
+        });
+
+    const fs::path csvPath = fs::path(outputDir) / "final_results.csv";
+    std::ofstream csvOut(csvPath);
+    if (!csvOut.is_open()) {
+        std::cerr << "[ABC-LIB] Failed to create " << csvPath << "\n";
+        return false;
+    }
+
+    csvOut << "HexFunc,ProbPattern,Success,Gates,InternalCost,RuntimeMs,Error\n";
+    for (const auto& row : rows) {
+        csvOut << row.csvLine;
+    }
+
+    std::cout << "[ABC-LIB] Done. Success=" << successCases.load()
+              << "/" << totalCases.load()
+              << ", CSV=" << csvPath << "\n";
+    return successCases.load() > 0;
+}
+
+Specification SynthesisFlow::buildSpecification(
+    const std::string& hexFunc,
+    int numInputs,
+    const std::vector<double>& inputProbs) {
+    std::vector<double> probs = inputProbs;
+    if (probs.size() < static_cast<size_t>(numInputs)) {
+        probs.resize(numInputs, 0.5);
+    } else if (probs.size() > static_cast<size_t>(numInputs)) {
+        probs.resize(numInputs);
+    }
+
+    Specification spec(numInputs, 1);
+    spec.setTruthTable(hexToTruthTable(hexFunc) & truthTableMaskForInputs(numInputs));
+    spec.setInputProbabilities(probs);
+    return spec;
+}
+
+Specification SynthesisFlow::buildSpecification(
+    const std::string& hexFunc,
+    const std::vector<double>& inputProbs) {
+    return buildSpecification(
+        hexFunc, inferNumInputsFromHexWidth(hexFunc), inputProbs);
+}
+
+int SynthesisFlow::runMinimizationPhase(const Specification& spec, int maxGates) {
+    for (int numGates = 1; numGates <= maxGates; ++numGates) {
+        auto solver = std::make_unique<KissatSolver>();
+        solver->setTimeLimit(10000);
+        PatternEncoder encoder(numGates);
+        if (!encoder.encode(solver.get(), spec, library_)) {
+            continue;
+        }
+        if (solver->solve() == SolveStatus::SAT) {
+            return numGates;
+        }
+    }
+    return -1;
+}
+
+std::tuple<bool, CircuitGraph, double> SynthesisFlow::runOptimizationPhase(
+    const Specification& spec,
+    int numGates) {
+    auto solver = std::make_unique<Z3Solver>();
+    solver->setTimeLimit(60000);
+
+    PatternEncoder encoder(numGates);
+    if (!encoder.encode(solver.get(), spec, library_)) {
+        return {false, CircuitGraph(), 0.0};
+    }
+
+    const SolveStatus status = solver->solve();
+    if (status == SolveStatus::OPTIMAL || status == SolveStatus::SAT) {
+        return {
+            true,
+            encoder.decode(solver.get()),
+            solver->getOptimizationResult()};
+    }
+
+    return {false, CircuitGraph(), 0.0};
+}
+
+void SynthesisFlow::processResults(SynthesisResult& res,
+                                   const CircuitGraph& graph,
+                                   const std::string& outputDir,
+                                   const std::string& variantName) {
+    const fs::path funcDir = fs::path(outputDir) / "detailed_infos" / res.hexFunc;
+    fs::create_directories(funcDir);
+
+    const fs::path blifPath = funcDir / ("pono_" + variantName + ".blif");
+    BlifWriter::write(blifPath.string(), "pono_design", graph, library_);
+
+    const fs::path txtPath = funcDir / ("pono_" + variantName + "_struct.txt");
+    std::ofstream txt(txtPath);
+    if (txt.is_open()) {
+        txt << "Variant: " << variantName << "\n";
+        txt << "HexFunc: " << res.hexFunc << "\n";
+        txt << "NumInputs: " << res.numInputs << "\n";
+        txt << "Gates: " << res.ponoGates << "\n";
+        txt << "InternalCost: " << res.internalCost << "\n";
+        for (const auto& nodePair : graph.getAllNodes()) {
+            const Node& node = nodePair.second;
+            if (node.type != NodeType::GATE) {
+                continue;
+            }
+
+            const int typeIdx = resolveGateTypeIndex(node.gateType, library_);
+            if (typeIdx < 0 || typeIdx >= static_cast<int>(library_.size())) {
+                txt << node.name << " = CONST0()\n";
+                continue;
+            }
+
+            const GateType& gate = library_[typeIdx];
+            txt << node.name << " = " << gate.name << "(";
+            const int limit = std::min(
+                gate.numInputs, static_cast<int>(node.fanins.size()));
+            for (int i = 0; i < limit; ++i) {
+                const auto it = graph.getAllNodes().find(node.fanins[i]);
+                txt << (it == graph.getAllNodes().end() ? "UNK" : it->second.name);
+                if (i + 1 < limit) {
+                    txt << ", ";
+                }
+            }
+            txt << ")\n";
+        }
+    }
+
+    if (!verify(res.hexFunc, res.numInputs, graph)) {
+        res.success = false;
+        res.errorMsg = "Verification Failed";
+    }
+}
+
+AbcStats SynthesisFlow::runAbcCommand(const std::string& cmdScript) {
+    AbcStats stats;
+    const std::string cmd =
+        shellQuote(abcPath_) + " -c " + shellQuote(cmdScript) + " 2>&1";
+
+    std::array<char, 256> buffer{};
+    std::string output;
+    std::unique_ptr<FILE, decltype(&pclose)> pipe(
+        popen(cmd.c_str(), "r"), pclose);
+    if (!pipe) {
+        return stats;
+    }
+
+    while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe.get()) != nullptr) {
+        output += buffer.data();
+    }
+
+    try {
+        std::regex reGates(R"((?:nd|nodes)\s*=\s*(\d+))", std::regex::icase);
+        std::regex reArea(R"(area\s*=\s*([0-9.+-eE]+))", std::regex::icase);
+        std::regex rePower(R"(power\s*=\s*([0-9.+-eE]+))", std::regex::icase);
+
+        for (std::sregex_iterator it(output.begin(), output.end(), reGates);
+             it != std::sregex_iterator();
+             ++it) {
+            stats.gates = std::stoi((*it)[1].str());
+        }
+        for (std::sregex_iterator it(output.begin(), output.end(), reArea);
+             it != std::sregex_iterator();
+             ++it) {
+            stats.area = std::stod((*it)[1].str());
+        }
+        for (std::sregex_iterator it(output.begin(), output.end(), rePower);
+             it != std::sregex_iterator();
+             ++it) {
+            stats.power = std::stod((*it)[1].str());
+        }
+    } catch (...) {
+    }
+
+    stats.valid = (stats.gates > 0 || stats.area > 0.0 || stats.power > 0.0);
+    return stats;
+}
+
+AbcStats SynthesisFlow::evaluateBlif(const std::string& blifFile) {
+    const std::string script =
+        "read_genlib " + libPath_ +
+        "; read_blif " + blifFile +
+        "; ps -p";
+    return runAbcCommand(script);
+}
+
+AbcStats SynthesisFlow::runAbcBaseline(const std::string& hexFunc, int numInputs) {
+    fs::create_directories("tmp_eval");
+
+    const std::string threadTag =
+        std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id()));
+    const fs::path mappedPath = fs::path("tmp_eval") / ("baseline_" + threadTag + ".blif");
+    runAbcToGenerateBaseline(hexFunc, numInputs, mappedPath.string());
+    return evaluateBlif(mappedPath.string());
+}
+
+bool SynthesisFlow::verify(const std::string& hexFunc,
+                           int numInputs,
+                           const CircuitGraph& graph) {
+    const LutTruthTable expected =
+        hexToTruthTable(hexFunc) & truthTableMaskForInputs(numInputs);
+    const int totalPatterns = 1 << numInputs;
+
+    if (graph.getOutputs().empty()) {
+        return false;
+    }
+
+    for (int mask = 0; mask < totalPatterns; ++mask) {
+        std::map<int, bool> nodeValues;
+        const auto& pis = graph.getInputs();
+        for (size_t i = 0; i < pis.size(); ++i) {
+            nodeValues[pis[i]] = ((mask >> static_cast<int>(i)) & 1) != 0;
+        }
+
+        for (const auto& entry : graph.getAllNodes()) {
+            const Node& node = entry.second;
+            if (node.type != NodeType::GATE) {
+                if (node.type == NodeType::CONST0) {
+                    nodeValues[node.id] = false;
+                } else if (node.type == NodeType::CONST1) {
+                    nodeValues[node.id] = true;
+                }
+                continue;
+            }
+
+            const int typeIdx = resolveGateTypeIndex(node.gateType, library_);
+            if (typeIdx < 0 || typeIdx >= static_cast<int>(library_.size())) {
+                nodeValues[node.id] = false;
+                continue;
+            }
+
+            const GateType& gate = library_[typeIdx];
+            int ttIndex = 0;
+            const int limit = std::min(
+                gate.numInputs, static_cast<int>(node.fanins.size()));
+            for (int i = 0; i < limit; ++i) {
+                const auto it = nodeValues.find(node.fanins[i]);
+                if (it != nodeValues.end() && it->second) {
+                    ttIndex |= (1 << i);
+                }
+            }
+            nodeValues[node.id] =
+                ((gate.truthTable >> ttIndex) & 1ULL) != 0;
+        }
+
+        const bool got = nodeValues[graph.getOutputs().front()];
+        const bool want = ((expected >> mask) & 1ULL) != 0;
+        if (got != want) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+std::vector<LibraryFunction> SynthesisFlow::loadTopHexFuncsFromCsv(
+    const std::string& topCsvPath,
+    int defaultNumInputs) const {
+    std::vector<LibraryFunction> functions;
+    std::ifstream input(topCsvPath);
+    if (!input.is_open()) {
+        std::cerr << "[Batch] Failed to open CSV: " << topCsvPath << "\n";
+        return functions;
+    }
+
+    std::map<std::pair<std::string, int>, std::size_t> dedup;
+    std::string line;
+    while (std::getline(input, line)) {
+        line = trimCopy(line);
+        if (line.empty()) {
+            continue;
+        }
+
+        const auto fields = parseCsvRow(line);
+        if (fields.empty()) {
+            continue;
+        }
+        if (toUpperCopy(fields[0]) == "HEXFUNC") {
+            continue;
+        }
+
+        int numInputs = defaultNumInputs;
+        std::size_t frequency = 0;
+        if (fields.size() >= 2) {
+            try {
+                const int parsed = std::stoi(fields[1]);
+                if (parsed > 0 && parsed <= kLutMaxInputs) {
+                    numInputs = parsed;
+                } else if (parsed > 0) {
+                    frequency = static_cast<std::size_t>(parsed);
+                }
+            } catch (...) {
+            }
+        }
+        if (fields.size() >= 3) {
+            try {
+                const long long parsed = std::stoll(fields[2]);
+                if (parsed > 0) {
+                    frequency = static_cast<std::size_t>(parsed);
+                }
+            } catch (...) {
+            }
+        }
+
+        const std::string hex = normalizeHexForInputs(fields[0], numInputs);
+        dedup[{hex, numInputs}] = std::max(dedup[{hex, numInputs}], frequency);
+    }
+
+    functions.reserve(dedup.size());
+    for (const auto& item : dedup) {
+        functions.push_back(
+            LibraryFunction{item.first.first, item.first.second, item.second});
+    }
+
+    std::sort(
+        functions.begin(),
+        functions.end(),
+        [](const LibraryFunction& lhs, const LibraryFunction& rhs) {
+            if (lhs.frequency != rhs.frequency) {
+                return lhs.frequency > rhs.frequency;
+            }
+            if (lhs.numInputs != rhs.numInputs) {
+                return lhs.numInputs < rhs.numInputs;
+            }
+            return lhs.hexFunc < rhs.hexFunc;
+        });
+
+    return functions;
+}
+
+std::vector<LibraryFunction> SynthesisFlow::buildExhaustiveFunctionSet(
+    int numInputs,
+    int numFunctionsToInclude) const {
+    if (numInputs <= 0 || numInputs > kLutMaxInputs) {
+        throw std::runtime_error("Exhaustive mode K out of range.");
+    }
+    if (numInputs > 4) {
+        throw std::runtime_error(
+            "Exhaustive mode is intentionally capped at K<=4.");
+    }
+
+    const uint64_t totalFunctions = uint64_t{1} << (1 << numInputs);
+    std::map<LutTruthTable, std::size_t> canonicalFrequency;
+    const LutTruthTable mask = truthTableMaskForInputs(numInputs);
+
+    for (uint64_t truth = 0; truth < totalFunctions; ++truth) {
+        const NpnRecipe recipe =
+            NpnCanonizer::computeCanonical(truth, numInputs);
+        ++canonicalFrequency[recipe.canonicalHex & mask];
+    }
+
+    std::vector<LibraryFunction> functions;
+    functions.reserve(canonicalFrequency.size());
+    for (const auto& item : canonicalFrequency) {
+        functions.push_back(
+            LibraryFunction{
+                formatHexTruthTable(item.first),
+                numInputs,
+                item.second});
+    }
+
+    std::sort(
+        functions.begin(),
+        functions.end(),
+        [](const LibraryFunction& lhs, const LibraryFunction& rhs) {
+            if (lhs.frequency != rhs.frequency) {
+                return lhs.frequency > rhs.frequency;
+            }
+            return lhs.hexFunc < rhs.hexFunc;
+        });
+
+    if (numFunctionsToInclude > 0 &&
+        static_cast<int>(functions.size()) > numFunctionsToInclude) {
+        functions.resize(numFunctionsToInclude);
+    }
+    return functions;
+}
+
+std::vector<LibraryFunction> SynthesisFlow::buildBenchmarkDrivenFunctionSet(
+    const LibraryGenerationConfig& cfg) const {
+    if (!cfg.inputCsv.empty() && fs::exists(cfg.inputCsv)) {
+        auto functions = loadTopHexFuncsFromCsv(cfg.inputCsv, cfg.lutInputs);
+        if (cfg.numFunctionsToInclude > 0 &&
+            static_cast<int>(functions.size()) > cfg.numFunctionsToInclude) {
+            functions.resize(cfg.numFunctionsToInclude);
+        }
+        return functions;
+    }
+
+    if (cfg.benchmarkDir.empty()) {
+        throw std::runtime_error(
+            "Benchmark mode requires benchmarkDir or a precomputed CSV.");
+    }
+
+    BenchmarkExtractor extractor(abcPath_, cfg.lutInputs);
+    extractor.processDirectory(cfg.benchmarkDir);
+
+    if (!cfg.inputCsv.empty()) {
+        extractor.exportTopHexFuncs(cfg.inputCsv, cfg.numFunctionsToInclude);
+    }
+
+    const auto ranked = extractor.getTopTruthTables(cfg.numFunctionsToInclude);
+    std::vector<LibraryFunction> functions;
+    functions.reserve(ranked.size());
+    for (const auto& item : ranked) {
+        functions.push_back(
+            LibraryFunction{
+                formatHexTruthTable(item.truthTable),
+                item.numInputs,
+                static_cast<std::size_t>(item.frequency)});
+    }
+    return functions;
+}
+
+std::vector<std::vector<double>> SynthesisFlow::buildUniformProbPatterns(
+    int numInputs) const {
+    if (numInputs <= 0) {
+        return {{}};
+    }
+
+    std::vector<std::vector<double>> patterns;
+    patterns.reserve(9);
+    for (int i = 1; i <= 9; ++i) {
+        patterns.push_back(
+            std::vector<double>(numInputs, 0.1 * static_cast<double>(i)));
+    }
+    return patterns;
+}
+
+std::string SynthesisFlow::probVectorToTag(
+    const std::vector<double>& probs) const {
+    std::ostringstream oss;
+    for (double p : probs) {
+        oss << "_" << static_cast<int>(std::round(p * 100.0));
+    }
+    return oss.str();
+}
+
+std::string SynthesisFlow::buildRawBlifFromHexFunc(
+    const std::string& hexFunc,
+    int numInputs) const {
+    const LutTruthTable value =
+        hexToTruthTable(hexFunc) & truthTableMaskForInputs(numInputs);
 
     std::ostringstream out;
-    out << ".model raw_func_" << hexFunc << "\n";
-    out << ".inputs a b c d\n";
+    out << ".model raw_" << normalizeHexForInputs(hexFunc, numInputs) << "\n";
+    out << ".inputs";
+    for (int i = 0; i < numInputs; ++i) {
+        out << " i" << i;
+    }
+    out << "\n";
     out << ".outputs y\n";
 
-    // 常 0：不要带输入
-    if (value == 0x0000) {
+    if (value == 0) {
         out << ".names y\n";
         out << ".end\n";
         return out.str();
     }
 
-    // 常 1：不要带输入
-    if (value == 0xFFFF) {
+    if (value == truthTableMaskForInputs(numInputs)) {
         out << ".names y\n";
         out << "1\n";
         out << ".end\n";
         return out.str();
     }
 
-    // 普通 4 输入函数
-    out << ".names a b c d y\n";
-    for (int m = 0; m < 16; ++m) {
-        if ((value >> m) & 1U) {
-            out << (((m >> 0) & 1) ? '1' : '0')
-                << (((m >> 1) & 1) ? '1' : '0')
-                << (((m >> 2) & 1) ? '1' : '0')
-                << (((m >> 3) & 1) ? '1' : '0')
-                << " 1\n";
+    out << ".names";
+    for (int i = 0; i < numInputs; ++i) {
+        out << " i" << i;
+    }
+    out << " y\n";
+
+    const int rows = 1 << numInputs;
+    for (int mask = 0; mask < rows; ++mask) {
+        if (((value >> mask) & 1ULL) == 0) {
+            continue;
         }
+        for (int bit = 0; bit < numInputs; ++bit) {
+            out << (((mask >> bit) & 1) ? '1' : '0');
+        }
+        out << " 1\n";
     }
 
     out << ".end\n";
     return out.str();
 }
 
-    int SynthesisFlow::countNamesInBlif(const std::string& blifPath) const {
-        std::ifstream ifs(blifPath);
-        if (!ifs.is_open()) return -1;
-
-        std::string line;
-        int cnt = 0;
-        while (std::getline(ifs, line)) {
-            if (line.rfind(".names", 0) == 0) cnt++;
-        }
-        return cnt;
+int SynthesisFlow::countNamesInBlif(const std::string& blifPath) const {
+    std::ifstream input(blifPath);
+    if (!input.is_open()) {
+        return -1;
     }
 
-    bool SynthesisFlow::runSingleABCLocalCase(
-    const std::string& hexFunc,
+    std::string line;
+    int count = 0;
+    while (std::getline(input, line)) {
+        if (trimCopy(line).rfind(".names", 0) == 0) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+bool SynthesisFlow::runSingleABCLocalCase(
+    const LibraryFunction& func,
     const std::vector<double>& inputProbs,
     const std::string& outputDir,
-    std::ofstream& csvOut)
-{
-    namespace fs = std::filesystem;
+    const std::string& tmpBlifPath,
+    std::string* csvLineOut) {
+    const std::string probTag = probVectorToTag(inputProbs);
+    const std::string variantName = func.hexFunc + probTag;
 
-    std::string probTag = probVectorToTag(inputProbs);
-    std::string variantName = hexFunc + probTag;
+    const fs::path funcDir = fs::path(outputDir) / "detailed_infos" / func.hexFunc;
+    fs::create_directories(funcDir);
 
-    fs::path funcDir = fs::path(outputDir) / "detailed_infos" / hexFunc;
-    if (!fs::exists(funcDir)) fs::create_directories(funcDir);
+    fs::path tmpBlif(tmpBlifPath);
+    if (tmpBlif.has_parent_path()) {
+        fs::create_directories(tmpBlif.parent_path());
+    }
 
-    fs::path rawBlifPath = funcDir / ("raw_" + variantName + ".blif");
-    fs::path abcBlifPath = funcDir / ("abc_" + variantName + ".blif");
-    fs::path logPath     = funcDir / ("abc_" + variantName + ".log");
+    const fs::path rawBlif =
+        tmpBlif.parent_path() / (tmpBlif.stem().string() + "_raw.blif");
+    const fs::path logPath =
+        tmpBlif.parent_path() / (tmpBlif.stem().string() + ".log");
+    const fs::path finalBlif = funcDir / ("abc_" + variantName + ".blif");
 
     {
-        std::ofstream ofs(rawBlifPath.string());
-        if (!ofs.is_open()) {
-            csvOut << hexFunc << "," << probTag << ",false,-1,-1,0,Raw BLIF Write Failed\n";
-            return false;
-        }
-        ofs << buildRawBlifFromHexFunc(hexFunc);
-    }
-
-    auto start = std::chrono::high_resolution_clock::now();
-
-    std::string abcSeq =
-        "strash; dc2; "
-        "balance; rewrite; balance; rewrite; rewrite -z; balance; rewrite -z; balance";
-
-    std::string abcCmd = abcPath_ + " -c \"read_blif " + rawBlifPath.string() +
-                         "; " + abcSeq +
-                         "; write_blif " + abcBlifPath.string() +
-                         "\" > " + logPath.string() + " 2>&1";
-
-    int ret = system(abcCmd.c_str());
-
-    auto end = std::chrono::high_resolution_clock::now();
-    long long runtimeMs =
-        std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-
-    if (ret != 0 || !fs::exists(abcBlifPath)) {
-    std::cerr << "[ABC-LIB] Failed case: " << variantName
-              << " | log: " << logPath << std::endl;
-    csvOut << hexFunc << "," << probTag << ",false,-1,-1," << runtimeMs << ",ABC Failed\n";
-    return false;
-}
-
-// 读回优化后的 BLIF 内容
-std::ifstream ifs(abcBlifPath.string());
-std::string abcContent((std::istreambuf_iterator<char>(ifs)),
-                       (std::istreambuf_iterator<char>()));
-
-bool hexOk = false;
-try {
-    hexOk = validateBlifImplementsHex(abcContent, hexFunc);
-} catch (const std::exception& e) {
-    std::cerr << "[ABC-LIB] Hex validation exception for " << variantName
-              << ": " << e.what() << std::endl;
-    csvOut << hexFunc << "," << probTag << ",false,-1,-1," << runtimeMs << ",HexCheckException\n";
-    return false;
-}
-
-if (!hexOk) {
-    std::cerr << "[ABC-LIB] Hex mismatch for " << variantName
-              << " | log: " << logPath << std::endl;
-    csvOut << hexFunc << "," << probTag << ",false,-1,-1," << runtimeMs << ",HexMismatch\n";
-    return false;
-}
-
-int gates = countNamesInBlif(abcBlifPath.string());
-double internalCost = static_cast<double>(gates >= 0 ? gates : -1);
-
-csvOut << hexFunc << ","
-       << probTag << ","
-       << "true,"
-       << gates << ","
-       << internalCost << ","
-       << runtimeMs << ","
-       << "\n";
-
-return true;
-}
-
-    bool SynthesisFlow::buildABCLocalLibraryFromTopCsv(
-        const std::string& topCsvPath,
-        const std::string& outputDir)
-    {
-        namespace fs = std::filesystem;
-
-        auto hexFuncs = loadTopHexFuncsFromCsv(topCsvPath);
-        if (hexFuncs.empty()) {
-            std::cerr << "[ABC-LIB] No hex funcs loaded from: " << topCsvPath << std::endl;
-            return false;
-        }
-
-        fs::path outDir(outputDir);
-        fs::path detailedDir = outDir / "detailed_infos";
-        if (!fs::exists(outDir)) fs::create_directories(outDir);
-        if (!fs::exists(detailedDir)) fs::create_directories(detailedDir);
-
-        fs::path csvPath = outDir / "final_results.csv";
-        std::ofstream csvOut(csvPath.string());
-        if (!csvOut.is_open()) {
-            std::cerr << "[ABC-LIB] Failed to create: " << csvPath << std::endl;
-            return false;
-        }
-
-        csvOut << "HexFunc,ProbPattern,Success,Gates,InternalCost,RuntimeMs,Error\n";
-
-        // 概率模板直接写死在这里
-        std::vector<std::vector<double>> probPatterns;
-        for(int i = 1; i <= 9; i++){
-            double t = 0.1 * i;
-            probPatterns.push_back({t, t, t, t});
-        }
-        int totalCases = 0;
-        int successCases = 0;
-
-        std::cout << "[ABC-LIB] Start building local library from: " << topCsvPath << std::endl;
-        std::cout << "[ABC-LIB] Output directory: " << outputDir << std::endl;
-
-        for (const auto& hexFunc : hexFuncs) {
-            for (const auto& probs : probPatterns) {
-                totalCases++;
-                bool ok = runSingleABCLocalCase(hexFunc, probs, outputDir, csvOut);
-                if (ok) successCases++;
+        std::ofstream rawStream(rawBlif);
+        if (!rawStream.is_open()) {
+            if (csvLineOut != nullptr) {
+                *csvLineOut = func.hexFunc + "," + probTag +
+                              ",false,-1,-1,0,Raw BLIF Write Failed\n";
             }
+            return false;
         }
-
-        csvOut.close();
-
-        std::cout << "[ABC-LIB] Build finished. Success "
-                << successCases << "/" << totalCases << std::endl;
-
-        return successCases > 0;
+        rawStream << buildRawBlifFromHexFunc(func.hexFunc, func.numInputs);
     }
 
-    std::vector<std::string> SynthesisFlow::loadTopHexFuncsFromCsv(const std::string& topCsvPath) {
-        std::vector<std::string> hexFuncs;
+    const auto started = std::chrono::steady_clock::now();
+    const std::string abcScript =
+        "read_blif " + rawBlif.string() +
+        "; strash; dc2; balance; rewrite; balance; rewrite; rewrite -z; "
+          "balance; rewrite -z; balance; write_blif " + tmpBlif.string();
+    const std::string cmd =
+        abcPath_ + " -c \"" + abcScript + "\" > " +
+        logPath.string() + " 2>&1";
+    const int ret = std::system(cmd.c_str());
+    const auto runtimeMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started)
+            .count();
 
-        std::ifstream ifs(topCsvPath);
-        if (!ifs.is_open()) {
-            std::cerr << "[ABC-LIB] Failed to open top csv: " << topCsvPath << std::endl;
-            return hexFuncs;
+    auto emitRow = [&](bool success,
+                       int gates,
+                       double internalCost,
+                       const std::string& error) {
+        if (csvLineOut == nullptr) {
+            return;
         }
+        std::ostringstream row;
+        row << func.hexFunc << "," << probTag << ","
+            << (success ? "true" : "false") << ","
+            << gates << "," << internalCost << ","
+            << runtimeMs << "," << error << "\n";
+        *csvLineOut = row.str();
+    };
 
-        std::string line;
-        bool isHeader = true;
-
-        while (std::getline(ifs, line)) {
-            if (isHeader) {
-                isHeader = false;
-                continue;
-            }
-            if (line.empty()) continue;
-
-            std::stringstream ss(line);
-            std::string hexFunc;
-            std::getline(ss, hexFunc, ',');
-
-            hexFunc.erase(std::remove_if(hexFunc.begin(), hexFunc.end(), ::isspace), hexFunc.end());
-            std::transform(hexFunc.begin(), hexFunc.end(), hexFunc.begin(), ::toupper);
-
-            while (hexFunc.size() < 4) hexFunc = "0" + hexFunc;
-            if (!hexFunc.empty()) hexFuncs.push_back(hexFunc);
-        }
-
-        std::cout << "[ABC-LIB] Loaded " << hexFuncs.size()
-                << " hex funcs from " << topCsvPath << std::endl;
-
-        return hexFuncs;
+    if (ret != 0 || !fs::exists(tmpBlif)) {
+        emitRow(false, -1, -1.0, "ABC Failed");
+        return false;
     }
 
-    std::string SynthesisFlow::probVectorToTag(const std::vector<double>& probs) const {
-        std::ostringstream oss;
-        for (double p : probs) {
-            int v = static_cast<int>(std::round(p * 100.0));
-            oss << "_" << v;
-        }
-        return oss.str();
+    std::ifstream tmpInput(tmpBlif);
+    std::string blifContent{
+        std::istreambuf_iterator<char>(tmpInput),
+        std::istreambuf_iterator<char>()};
+
+    if (!validateBlifImplementsHex(blifContent, func.hexFunc, func.numInputs)) {
+        emitRow(false, -1, -1.0, "HexMismatch");
+        return false;
     }
 
-    bool SynthesisFlow::evaluateCubeMatch(const std::string& cube, int mask, int nInputs) const {
-        for (int i = 0; i < nInputs && i < (int)cube.size(); ++i) {
-            char c = cube[i];
-            if (c == '-') continue;
+    fs::copy_file(tmpBlif, finalBlif, fs::copy_options::overwrite_existing);
+    const int gates = countNamesInBlif(finalBlif.string());
+    emitRow(true, gates, static_cast<double>(gates), "");
+    return true;
+}
 
-            int bit = (mask >> i) & 1;
-            if (c == '1' && bit != 1) return false;
-            if (c == '0' && bit != 0) return false;
-        }
-        return true;
-    }
-
-   double SynthesisFlow::evaluateNamesNodeTruth(
-    const std::vector<std::string>& sop,
-    int mask,
-    int nInputs) const
-{
-    // 常 0：没有任何 cover
-    if (sop.empty()) return 0.0;
-
-    int cnt0 = 0, cnt1 = 0;
-    for (const auto& row : sop) {
-        std::stringstream ss(row);
-        std::string cube, outVal;
-        if (!(ss >> cube)) continue;
-
-        if (!(ss >> outVal)) {
-            // 常 1 的特殊写法：.names y 后面单独一行 "1"
-            if (nInputs == 0 && cube == "1") return 1.0;
+bool SynthesisFlow::evaluateCubeMatch(const std::string& cube,
+                                      int mask,
+                                      int nInputs) const {
+    for (int i = 0; i < nInputs && i < static_cast<int>(cube.size()); ++i) {
+        const char c = cube[i];
+        if (c == '-') {
             continue;
         }
 
-        if (outVal == "0") cnt0++;
-        else if (outVal == "1") cnt1++;
-    }
-
-    // 如果是 0-cover 为主，则表示列出的 cube 输出为 0，其余为 1
-    bool isZeroCover = (cnt0 > cnt1);
-
-    bool covered = false;
-    for (const auto& row : sop) {
-        std::stringstream ss(row);
-        std::string cube, outVal;
-        if (!(ss >> cube >> outVal)) continue;
-
-        if (evaluateCubeMatch(cube, mask, nInputs)) {
-            covered = true;
-            if (isZeroCover) {
-                return (outVal == "0") ? 0.0 : 1.0;
-            } else {
-                return (outVal == "1") ? 1.0 : 0.0;
-            }
+        const int bit = (mask >> i) & 1;
+        if ((c == '1' && bit == 0) || (c == '0' && bit == 1)) {
+            return false;
         }
     }
+    return true;
+}
 
-    // 没有匹配到任何 cover
-    // 1-cover 语义：默认 0
-    // 0-cover 语义：默认 1
+double SynthesisFlow::evaluateNamesNodeTruth(const std::vector<std::string>& sop,
+                                             int mask,
+                                             int nInputs) const {
+    if (sop.empty()) {
+        return 0.0;
+    }
+
+    bool havePolarity = false;
+    bool isZeroCover = false;
+    for (const std::string& row : sop) {
+        std::stringstream ss(row);
+        std::string cube;
+        std::string outVal;
+        if (!(ss >> cube)) {
+            continue;
+        }
+        if (!(ss >> outVal)) {
+            if (nInputs == 0 && cube == "1") {
+                return 1.0;
+            }
+            continue;
+        }
+        isZeroCover = (outVal == "0");
+        havePolarity = true;
+        break;
+    }
+
+    if (!havePolarity) {
+        return 0.0;
+    }
+
+    for (const std::string& row : sop) {
+        std::stringstream ss(row);
+        std::string cube;
+        std::string outVal;
+        if (!(ss >> cube >> outVal)) {
+            continue;
+        }
+        if (!evaluateCubeMatch(cube, mask, nInputs)) {
+            continue;
+        }
+        if (isZeroCover) {
+            return outVal == "0" ? 0.0 : 1.0;
+        }
+        return outVal == "1" ? 1.0 : 0.0;
+    }
+
     return isZeroCover ? 1.0 : 0.0;
 }
 
-    uint16_t SynthesisFlow::computeHexFromBlifFragment(const std::string& blifContent) const {
-        struct NamesNode {
-            std::vector<std::string> inputs;
-            std::string output;
-            std::vector<std::string> sop;
-        };
+LutTruthTable SynthesisFlow::computeHexFromBlifFragment(
+    const std::string& blifContent,
+    int numInputs) const {
+    struct NamesNode {
+        std::vector<std::string> inputs;
+        std::string output;
+        std::vector<std::string> sop;
+    };
 
-        std::vector<std::string> primaryInputs;
-        std::string primaryOutput;
-        std::vector<NamesNode> nodes;
+    std::vector<std::string> primaryInputs;
+    std::string primaryOutput;
+    std::vector<NamesNode> nodes;
 
-        {
-            std::stringstream ss(blifContent);
-            std::string line;
+    std::stringstream input(blifContent);
+    std::string rawLine;
+    while (readLogicalLine(input, rawLine)) {
+        const std::string line = trimCopy(rawLine);
+        if (line.empty() || line[0] == '#') {
+            continue;
+        }
 
-            while (std::getline(ss, line)) {
-                if (line.empty()) continue;
-
-                if (line.rfind(".inputs", 0) == 0) {
-                    std::stringstream ls(line.substr(7));
-                    std::string tok;
-                    while (ls >> tok) {
-                        if (tok != "\\" && !tok.empty()) primaryInputs.push_back(tok);
-                    }
-                } else if (line.rfind(".outputs", 0) == 0) {
-                    std::stringstream ls(line.substr(8));
-                    std::string tok;
-                    while (ls >> tok) {
-                        if (tok != "\\" && !tok.empty()) {
-                            primaryOutput = tok;
-                            break;
-                        }
-                    }
-                } else if (line.rfind(".names", 0) == 0) {
-                    std::stringstream ls(line);
-                    std::string dotNames, tok;
-                    ls >> dotNames;
-
-                    std::vector<std::string> ports;
-                    while (ls >> tok) {
-                        if (tok != "\\" && !tok.empty()) ports.push_back(tok);
-                    }
-
-                    if (ports.empty()) continue;
-
-                    NamesNode node;
-                    node.output = ports.back();
-                    ports.pop_back();
-                    node.inputs = ports;
-
-                    while (ss.peek() != EOF) {
-                        std::streampos pos = ss.tellg();
-                        std::string sopLine;
-                        if (!std::getline(ss, sopLine)) break;
-
-                        if (sopLine.empty()) continue;
-                        if (sopLine[0] == '.') {
-                            ss.seekg(pos);
-                            break;
-                        }
-
-                        node.sop.push_back(sopLine);
-                    }
-
-                    nodes.push_back(node);
+        if (line.rfind(".inputs", 0) == 0) {
+            std::stringstream ss(line.substr(7));
+            std::string token;
+            while (ss >> token) {
+                if (token != "\\") {
+                    primaryInputs.push_back(token);
                 }
             }
+            continue;
         }
 
-        if (primaryInputs.size() > 4) {
-            throw std::runtime_error("[HexCheck] BLIF fragment has more than 4 primary inputs.");
+        if (line.rfind(".outputs", 0) == 0) {
+            std::stringstream ss(line.substr(8));
+            ss >> primaryOutput;
+            continue;
         }
 
-        if (primaryOutput.empty()) {
-            throw std::runtime_error("[HexCheck] BLIF fragment has no primary output.");
-        }
+        if (line.rfind(".names", 0) == 0) {
+            std::stringstream ss(line);
+            std::string token;
+            ss >> token;
 
-        uint16_t hexVal = 0;
-        int total = 1 << (int)primaryInputs.size();
-
-        for (int mask = 0; mask < total; ++mask) {
-            std::map<std::string, double> values;
-
-            // 赋 primary inputs
-            for (int i = 0; i < (int)primaryInputs.size(); ++i) {
-                values[primaryInputs[i]] = ((mask >> i) & 1) ? 1.0 : 0.0;
-            }
-
-            // 按出现顺序求每个 .names 节点
-            for (const auto& node : nodes) {
-                int localMask = 0;
-                for (int i = 0; i < (int)node.inputs.size(); ++i) {
-                    const auto& inName = node.inputs[i];
-                    int bit = (values.count(inName) && values[inName] > 0.5) ? 1 : 0;
-                    localMask |= (bit << i);
-                }
-
-                double outVal = evaluateNamesNodeTruth(node.sop, localMask, (int)node.inputs.size());
-                values[node.output] = outVal;
-            }
-
-            int outBit = (values.count(primaryOutput) && values[primaryOutput] > 0.5) ? 1 : 0;
-            if (outBit) hexVal |= (1u << mask);
-        }
-
-        // 如果 primaryInputs 少于 4，则高位组合默认扩展
-        // 为了和 4-LUT hexFunc 对齐，把低维函数复制扩展到 4 输入空间
-        if ((int)primaryInputs.size() < 4) {
-            uint16_t expanded = 0;
-            int oldVars = (int)primaryInputs.size();
-            int oldTotal = 1 << oldVars;
-
-            for (int mask4 = 0; mask4 < 16; ++mask4) {
-                int reducedMask = mask4 & (oldTotal - 1);
-                if ((hexVal >> reducedMask) & 1u) {
-                    expanded |= (1u << mask4);
+            std::vector<std::string> ports;
+            while (ss >> token) {
+                if (token != "\\") {
+                    ports.push_back(token);
                 }
             }
-            hexVal = expanded;
-        }
+            if (ports.empty()) {
+                continue;
+            }
 
-        return hexVal;
+            NamesNode node;
+            node.output = ports.back();
+            ports.pop_back();
+            node.inputs = std::move(ports);
+
+            while (input.good()) {
+                const std::streampos pos = input.tellg();
+                std::string sopLine;
+                if (!std::getline(input, sopLine)) {
+                    break;
+                }
+                if (!sopLine.empty() && sopLine.back() == '\r') {
+                    sopLine.pop_back();
+                }
+                sopLine = trimCopy(sopLine);
+                if (sopLine.empty()) {
+                    continue;
+                }
+                if (sopLine[0] == '.') {
+                    input.seekg(pos);
+                    break;
+                }
+                node.sop.push_back(sopLine);
+            }
+
+            nodes.push_back(std::move(node));
+        }
     }
 
-    bool SynthesisFlow::validateBlifImplementsHex(
-        const std::string& blifContent,
-        const std::string& expectedHex) const
-    {
-        uint16_t actual = computeHexFromBlifFragment(blifContent);
-
-        unsigned expected = 0;
-        std::stringstream ss;
-        ss << std::hex << expectedHex;
-        ss >> expected;
-
-        return actual == static_cast<uint16_t>(expected);
+    if (primaryOutput.empty()) {
+        throw std::runtime_error("BLIF fragment has no primary output.");
+    }
+    if (numInputs < 0 || numInputs > kLutMaxInputs) {
+        throw std::runtime_error("Requested K is out of range.");
+    }
+    if (static_cast<int>(primaryInputs.size()) > numInputs) {
+        throw std::runtime_error("BLIF fragment uses more inputs than requested K.");
     }
 
-    void SynthesisFlow::debugSingleHexCase(const std::string& hexFunc) {
-    namespace fs = std::filesystem;
+    LutTruthTable truth = 0;
+    const int totalRows = 1 << numInputs;
+    for (int fullMask = 0; fullMask < totalRows; ++fullMask) {
+        std::map<std::string, double> values;
+        for (size_t i = 0; i < primaryInputs.size(); ++i) {
+            int sourceIndex = parseInputIndexFromName(primaryInputs[i]);
+            if (sourceIndex < 0 || sourceIndex >= numInputs) {
+                sourceIndex = static_cast<int>(i);
+            }
+            values[primaryInputs[i]] = ((fullMask >> sourceIndex) & 1) ? 1.0 : 0.0;
+        }
 
-    fs::path dbgDir = fs::current_path() / "tmp_hex_debug";
-    if (!fs::exists(dbgDir)) fs::create_directories(dbgDir);
+        for (const auto& node : nodes) {
+            int localMask = 0;
+            for (size_t i = 0; i < node.inputs.size(); ++i) {
+                const auto it = values.find(node.inputs[i]);
+                const bool bit = (it != values.end() && it->second > 0.5);
+                if (bit) {
+                    localMask |= (1 << static_cast<int>(i));
+                }
+            }
+            values[node.output] = evaluateNamesNodeTruth(
+                node.sop, localMask, static_cast<int>(node.inputs.size()));
+        }
 
-    fs::path rawBlifPath = dbgDir / ("raw_" + hexFunc + ".blif");
-    fs::path abcBlifPath = dbgDir / ("abc_" + hexFunc + ".blif");
-    fs::path logPath     = dbgDir / ("abc_" + hexFunc + ".log");
+        const auto outIt = values.find(primaryOutput);
+        if (outIt != values.end() && outIt->second > 0.5) {
+            truth |= (LutTruthTable{1} << fullMask);
+        }
+    }
 
-    std::string rawContent = buildRawBlifFromHexFunc(hexFunc);
+    return truth & truthTableMaskForInputs(numInputs);
+}
+
+bool SynthesisFlow::validateBlifImplementsHex(const std::string& blifContent,
+                                              const std::string& expectedHex,
+                                              int numInputs) const {
+    const LutTruthTable actual =
+        computeHexFromBlifFragment(blifContent, numInputs);
+    const LutTruthTable expected =
+        hexToTruthTable(expectedHex) & truthTableMaskForInputs(numInputs);
+    return actual == expected;
+}
+
+void SynthesisFlow::debugSingleHexCase(const std::string& hexFunc) {
+    const int numInputs = inferNumInputsFromHexWidth(hexFunc);
+    fs::create_directories("tmp_hex_debug");
+
+    const fs::path rawPath = fs::path("tmp_hex_debug") / ("raw_" + hexFunc + ".blif");
+    const fs::path abcPath = fs::path("tmp_hex_debug") / ("abc_" + hexFunc + ".blif");
 
     {
-        std::ofstream ofs(rawBlifPath.string());
-        ofs << rawContent;
+        std::ofstream raw(rawPath);
+        raw << buildRawBlifFromHexFunc(hexFunc, numInputs);
     }
 
-    std::cout << "\n========== DEBUG HEX " << hexFunc << " ==========\n";
-    std::cout << "[1] RAW BLIF:\n" << rawContent << "\n";
+    const std::string abcScript =
+        "read_blif " + rawPath.string() +
+        "; strash; dc2; balance; rewrite; balance; rewrite; rewrite -z; "
+          "balance; rewrite -z; balance; write_blif " + abcPath.string();
+    const std::string cmd = this->abcPath_ + " -c \"" + abcScript + "\"";
 
-    try {
-        uint16_t rawHex = computeHexFromBlifFragment(rawContent);
-        std::stringstream ss;
-        ss << std::uppercase << std::hex << std::setw(4) << std::setfill('0') << rawHex;
-        std::cout << "[2] RAW->HEX = " << ss.str() << "\n";
-    } catch (const std::exception& e) {
-        std::cout << "[2] RAW->HEX exception: " << e.what() << "\n";
-    }
+    std::cout << "[Debug] raw BLIF: " << rawPath << "\n";
+    std::cout << "[Debug] ABC cmd: " << cmd << "\n";
+    std::cout << "[Debug] ABC return code: " << std::system(cmd.c_str()) << "\n";
 
-    std::string abcSeq =
-        "strash; dc2; "
-        "balance; rewrite; balance; rewrite; rewrite -z; balance; rewrite -z; balance";
-
-    std::string abcCmd = abcPath_ + " -c \"read_blif " + rawBlifPath.string() +
-                         "; " + abcSeq +
-                         "; write_blif " + abcBlifPath.string() +
-                         "\" > " + logPath.string() + " 2>&1";
-
-    int ret = system(abcCmd.c_str());
-    std::cout << "[3] ABC ret = " << ret << "\n";
-
-    if (!fs::exists(abcBlifPath)) {
-        std::cout << "[4] ABC output not generated. See log: " << logPath << "\n";
+    std::ifstream mapped(abcPath);
+    if (!mapped.is_open()) {
+        std::cout << "[Debug] No ABC output generated.\n";
         return;
     }
 
-    std::ifstream ifs(abcBlifPath.string());
-    std::string abcContent((std::istreambuf_iterator<char>(ifs)),
-                           (std::istreambuf_iterator<char>()));
-
-    std::cout << "[4] ABC BLIF:\n" << abcContent << "\n";
-
-    try {
-        uint16_t abcHex = computeHexFromBlifFragment(abcContent);
-        std::stringstream ss;
-        ss << std::uppercase << std::hex << std::setw(4) << std::setfill('0') << abcHex;
-        std::cout << "[5] ABC->HEX = " << ss.str() << "\n";
-    } catch (const std::exception& e) {
-        std::cout << "[5] ABC->HEX exception: " << e.what() << "\n";
-    }
-
-    std::cout << "=========================================\n";
+    std::string content{
+        std::istreambuf_iterator<char>(mapped),
+        std::istreambuf_iterator<char>()};
+    std::cout << "[Debug] Implements expected hex: "
+              << (validateBlifImplementsHex(content, hexFunc, numInputs)
+                      ? "true"
+                      : "false")
+              << "\n";
 }
-} // namespace fes
+
+}  // namespace fes

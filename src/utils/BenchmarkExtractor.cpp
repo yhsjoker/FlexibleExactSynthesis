@@ -1,5 +1,6 @@
 
 #include "fes/utils/BenchmarkExtractor.h"
+#include "fes/core/NpnTransform.h"
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -18,6 +19,12 @@ std::string trimCopy(const std::string& s) {
     if (first == std::string::npos) return "";
     size_t last = s.find_last_not_of(" \t\r\n");
     return s.substr(first, last - first + 1);
+}
+
+LutTruthTable truthTableMaskForInputs(int numInputs) {
+    const int rows = 1 << numInputs;
+    if (rows >= 64) return ~LutTruthTable{0};
+    return (LutTruthTable{1} << rows) - 1;
 }
 
 bool readLogicalLine(std::istream& is, std::string& outLine) {
@@ -47,8 +54,8 @@ bool readLogicalLine(std::istream& is, std::string& outLine) {
 
 } // namespace
 
-BenchmarkExtractor::BenchmarkExtractor(const std::string& abcPath)
-    : abcPath_(abcPath) {}
+BenchmarkExtractor::BenchmarkExtractor(const std::string& abcPath, int lutInputs)
+    : abcPath_(abcPath), lutInputs_(lutInputs) {}
 
 void BenchmarkExtractor::processDirectory(const std::string& folderPath) {
     namespace fs = std::filesystem;
@@ -76,7 +83,8 @@ void BenchmarkExtractor::processDirectory(const std::string& folderPath) {
             if (runAbcMapping(entry.path(), tempFilePath)) {
                 auto local_map = processMappedFile(tempFilePath);
 
-                std::vector<std::pair<LutTruthTable, int>> local_sorted(local_map.begin(), local_map.end());
+                std::vector<std::pair<TruthKey, int>> local_sorted(
+                    local_map.begin(), local_map.end());
                 std::sort(local_sorted.begin(), local_sorted.end(),
                     [](const auto& a, const auto& b) { return a.second > b.second; });
 
@@ -110,7 +118,8 @@ bool BenchmarkExtractor::runAbcMapping(const std::filesystem::path& inputFile,
                                        const std::filesystem::path& outputFile) {
     std::stringstream cmd;
     cmd << abcPath_ << " -c \"read " << inputFile.string()
-        << "; strash; if -K 4 -a; write_blif " << outputFile.string() << "\"";
+        << "; strash; if -K " << lutInputs_ << " -a; write_blif "
+        << outputFile.string() << "\"";
 
 #ifdef _WIN32
     cmd << " > NUL 2>&1";
@@ -127,9 +136,9 @@ bool BenchmarkExtractor::runAbcMapping(const std::filesystem::path& inputFile,
     return std::filesystem::exists(outputFile);
 }
 
-std::map<LutTruthTable, int> BenchmarkExtractor::processMappedFile(
+std::map<BenchmarkExtractor::TruthKey, int> BenchmarkExtractor::processMappedFile(
     const std::filesystem::path& filePath) {
-    std::map<LutTruthTable, int> local_freq;
+    std::map<TruthKey, int> local_freq;
     std::ifstream file(filePath);
     if (!file.is_open()) return local_freq;
 
@@ -139,9 +148,12 @@ std::map<LutTruthTable, int> BenchmarkExtractor::processMappedFile(
     std::vector<std::string> coverLines;
 
     auto flushGate = [&]() {
-        if (inGate && numInputs >= 0 && numInputs <= kLutMaxInputs) {
+        if (inGate && numInputs >= 0 && numInputs <= lutInputs_) {
             LutTruthTable tt = computeTruthTable(numInputs, coverLines);
-            local_freq[tt]++;
+            tt &= truthTableMaskForInputs(numInputs);
+            const NpnRecipe recipe =
+                NpnCanonizer::computeCanonical(tt, numInputs);
+            local_freq[{numInputs, recipe.canonicalHex}]++;
         }
         inGate = false;
         numInputs = 0;
@@ -182,7 +194,7 @@ std::map<LutTruthTable, int> BenchmarkExtractor::processMappedFile(
 LutTruthTable BenchmarkExtractor::computeTruthTable(
     int numInputs,
     const std::vector<std::string>& coverLines) {
-    if (numInputs < 0 || numInputs > kLutMaxInputs) return 0;
+    if (numInputs < 0 || numInputs > lutInputs_) return 0;
     if (coverLines.empty()) return 0;
 
     // 和 InnovusBatchEvaluator::getHexValue() 保持一致：
@@ -237,36 +249,34 @@ LutTruthTable BenchmarkExtractor::computeTruthTable(
 }
 
 void BenchmarkExtractor::exportTopHexFuncs(const std::string& outputPath, int topN) {
-    std::vector<std::pair<LutTruthTable, int>> sorted_funcs(
-        frequency_map_.begin(), frequency_map_.end());
-    std::sort(sorted_funcs.begin(), sorted_funcs.end(),
-        [](const auto& a, const auto& b) {
-            return a.second > b.second;
-        });
-
+    const std::vector<RankedTruthTable> sorted_funcs = getTopTruthTables(topN);
     std::ofstream outFile(outputPath);
-    outFile << "HexFunc,Frequency,Rank\n";
+    outFile << "HexFunc,NumInputs,Frequency,Rank\n";
 
     int count = 0;
 
-    for (const auto& pair : sorted_funcs) {
-        if (guaranteed_funcs_.count(pair.first)) {
+    for (const auto& func : sorted_funcs) {
+        const TruthKey key{func.numInputs, func.truthTable};
+        if (guaranteed_funcs_.count(key)) {
             outFile << std::hex << std::uppercase
                     << std::setw(kLutTruthTableHexDigits)
-                    << std::setfill('0') << pair.first;
-            outFile << "," << std::dec << pair.second;
+                    << std::setfill('0') << func.truthTable;
+            outFile << "," << std::dec << func.numInputs;
+            outFile << "," << func.frequency;
             outFile << "," << (count + 1) << "\n";
             count++;
         }
     }
 
-    for (const auto& pair : sorted_funcs) {
-        if (count >= topN) break;
-        if (!guaranteed_funcs_.count(pair.first)) {
+    for (const auto& func : sorted_funcs) {
+        if (topN > 0 && count >= topN) break;
+        const TruthKey key{func.numInputs, func.truthTable};
+        if (!guaranteed_funcs_.count(key)) {
             outFile << std::hex << std::uppercase
                     << std::setw(kLutTruthTableHexDigits)
-                    << std::setfill('0') << pair.first;
-            outFile << "," << std::dec << pair.second;
+                    << std::setfill('0') << func.truthTable;
+            outFile << "," << std::dec << func.numInputs;
+            outFile << "," << func.frequency;
             outFile << "," << (count + 1) << "\n";
             count++;
         }
@@ -274,6 +284,30 @@ void BenchmarkExtractor::exportTopHexFuncs(const std::string& outputPath, int to
 
     std::cout << "[Extractor] Exported total " << count
               << " hexfuncs to " << outputPath << std::endl;
+}
+
+std::vector<RankedTruthTable> BenchmarkExtractor::getTopTruthTables(int topN) const {
+    std::vector<std::pair<TruthKey, int>> sorted_funcs(
+        frequency_map_.begin(), frequency_map_.end());
+    std::sort(sorted_funcs.begin(), sorted_funcs.end(),
+        [](const auto& a, const auto& b) {
+            if (a.second != b.second) return a.second > b.second;
+            if (a.first.numInputs != b.first.numInputs) {
+                return a.first.numInputs < b.first.numInputs;
+            }
+            return a.first.truthTable < b.first.truthTable;
+        });
+
+    std::vector<RankedTruthTable> ranked;
+    for (const auto& pair : sorted_funcs) {
+        ranked.push_back(
+            RankedTruthTable{
+                pair.first.truthTable,
+                pair.first.numInputs,
+                pair.second});
+        if (topN > 0 && static_cast<int>(ranked.size()) >= topN) break;
+    }
+    return ranked;
 }
 
 } // namespace fes

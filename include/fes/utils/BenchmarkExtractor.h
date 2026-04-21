@@ -9,11 +9,18 @@
 
 namespace fes {
 
+struct RankedTruthTable {
+    LutTruthTable truthTable = 0;
+    int numInputs = 0;
+    int frequency = 0;
+};
+
 class BenchmarkExtractor {
 public:
     // 构造函数：可以指定 abc 的可执行文件路径
     // 默认为 "abc" (假设已在环境变量 PATH 中)
-    explicit BenchmarkExtractor(const std::string& abcPath = "abc");
+    explicit BenchmarkExtractor(const std::string& abcPath = "abc",
+                                int lutInputs = kLutMaxInputs);
 
     // 核心功能：处理指定文件夹下的所有 benchmark 文件 (.blif, .aig)
     // 1. 自动调用 ABC 将其映射为 4-LUT
@@ -24,16 +31,31 @@ public:
     // 导出前 N 个最频繁出现的 HexFunc 到文件
     void exportTopHexFuncs(const std::string& outputPath, int topN);
 
+    // Return the most frequent canonical truth tables collected by the last
+    // processDirectory() call. Frequency ordering is descending.
+    std::vector<RankedTruthTable> getTopTruthTables(int topN) const;
+
 private:
+    struct TruthKey {
+        int numInputs = 0;
+        LutTruthTable truthTable = 0;
+
+        bool operator<(const TruthKey& other) const {
+            if (numInputs != other.numInputs) return numInputs < other.numInputs;
+            return truthTable < other.truthTable;
+        }
+    };
+
     std::string abcPath_;
-    std::map<LutTruthTable, int> frequency_map_;
-    std::set<LutTruthTable> guaranteed_funcs_;
+    int lutInputs_ = kLutMaxInputs;
+    std::map<TruthKey, int> frequency_map_;
+    std::set<TruthKey> guaranteed_funcs_;
 
     // 调用 ABC 将 inputFile 映射为 outputFile
     bool runAbcMapping(const std::filesystem::path& inputFile, const std::filesystem::path& outputFile);
 
     // 解析已映射的 BLIF 文件 (统计逻辑)
-    std::map<LutTruthTable, int> processMappedFile(const std::filesystem::path& filePath);
+    std::map<TruthKey, int> processMappedFile(const std::filesystem::path& filePath);
 
     // 辅助计算真值表
     LutTruthTable computeTruthTable(int numInputs, const std::vector<std::string>& coverLines);
