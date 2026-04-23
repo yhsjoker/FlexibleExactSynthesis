@@ -1,16 +1,16 @@
 {
+  // Run with: ./build/fes_app generate --config config/generate_k4_cartesian.json
   "command": "generate",
   "run": {
-    "resume_policy": "resume",
+    "resume_policy": "run_all",
     "case_timeout_ms": 0,
     "threads": 0
   },
   "generate": {
     "k": 4,
-    "num_functions": 32,
-    "function_source": "benchmark",
-    "benchmark_dir": "benchmarks",
-    "output_dir": "benchmark_k4_cartesian",
+    "num_functions": 1,
+    "function_source": "exhaustive",
+    "output_dir": "activity_cartesian_k4_num1",
     "verify": false,
     "timeouts_ms": {
       "sat": 10000,
@@ -18,6 +18,7 @@
       "case": 0
     },
     "activity": {
+      // Cartesian product of levels. For K=4 and four levels this creates 4^4 patterns.
       "mode": "cartesian",
       "levels": [0.2, 0.4, 0.6, 0.8]
     }

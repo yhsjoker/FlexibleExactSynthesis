@@ -1,0 +1,31 @@
+{
+  "command": "generate",
+  "dependencies": {
+    "abc_path": "/root/autodl-tmp/softwares/abc/abc",
+    "python_script": "scripts/single_power_run.py",
+    "genlib_path": "resources/nangate_45nm.genlib",
+    "liberty_path": "resources/NangateOpenCellLibrary_typical.lib",
+    "standard_cell_csv": "resources/standard_cells.csv"
+  },
+  "run": {
+    "resume_policy": "resume",
+    "case_timeout_ms": 0,
+    "threads": 0
+  },
+  "generate": {
+    "k": 4,
+    "num_functions": 0,
+    "function_source": "exhaustive",
+    "output_dir": "library_k4_npn_cartesian",
+    "verify": true,
+    "timeouts_ms": {
+      "sat": 10000,
+      "optimization": 60000,
+      "case": 0
+    },
+    "activity": {
+      "mode": "cartesian",
+      "levels": [0.2, 0.4, 0.6, 0.8]
+    }
+  }
+}

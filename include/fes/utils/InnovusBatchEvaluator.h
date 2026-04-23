@@ -199,10 +199,7 @@ private:
                         double outToggleRate,
                         int origGateCost);
 
-    // 4. 旧 CSV
-    void exportResultsToCsv(const std::vector<PPADiff>& results);
-
-    // 5. 旧 ABC 强流
+    // 4. 旧 ABC 强流
     std::string runABCExhaustiveOpt(const std::string& inputBlif);
 
     // =========================
@@ -231,10 +228,6 @@ private:
     std::string rewriteMappedBlifWithPONOLibrarySimple(
         const std::string& mappedBlifPath,
         const std::vector<double>& actualProbs);
-
-    // 新 CSV
-    void exportMappedFourWayResultsToCsv(
-        const std::vector<MappedFourWayResult>& results);
 
     // 辅助：计算 SOP 输出概率
     double computeSopOutputProb(const std::vector<std::string>& sop,

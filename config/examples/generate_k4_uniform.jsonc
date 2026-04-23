@@ -1,0 +1,30 @@
+{
+  // Run with: ./build/fes_app generate --config config/generate_k4_uniform.json
+  // Runnable configs are strict JSON; this commented file is documentation.
+  "command": "generate",
+  "run": {
+    // run_all ignores prior manifests. Use resume/rerun policies for partial runs.
+    "resume_policy": "run_all",
+    // 0 disables case-timeout marking.
+    "case_timeout_ms": 0,
+    // 0 means auto/default worker count for generation.
+    "threads": 0
+  },
+  "generate": {
+    "k": 4,
+    "num_functions": 1,
+    "function_source": "exhaustive",
+    // Relative output_dir resolves to <project_root>/results_repo/activity_uniform_k4_num1.
+    "output_dir": "activity_uniform_k4_num1",
+    "verify": false,
+    "timeouts_ms": {
+      "sat": 10000,
+      "optimization": 60000,
+      "case": 0
+    },
+    "activity": {
+      // Default/legacy behavior: uniform sweep at 0.1, 0.2, ..., 0.9.
+      "mode": "uniform"
+    }
+  }
+}

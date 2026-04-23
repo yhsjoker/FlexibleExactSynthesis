@@ -6,7 +6,7 @@
     "threads": 0
   },
   "evaluate": {
-    "benchmark_dir": "/home/yhs_joker/datasets/benchmarks",
+    "benchmark_dir": "benchmarks",
     "library_dir": "",
     "verify": false,
     "mode": "standard"

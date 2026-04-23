@@ -93,12 +93,15 @@ void verifyConfigParsingAndCliPrecedence() {
         path,
         "{\n"
         "  \"command\": \"generate\",\n"
+        "  \"tools\": {\"abc_path\": \"/tmp/abc_from_tools\"},\n"
+        "  \"dependencies\": {\"abc_path\": \"/tmp/abc_from_dependencies\"},\n"
         "  \"run\": {\"resume_policy\": \"resume\", \"case_timeout_ms\": 42},\n"
         "  \"generate\": {\n"
         "    \"k\": 4,\n"
         "    \"num_functions\": 7,\n"
         "    \"function_source\": \"exhaustive\",\n"
         "    \"output_dir\": \"results_repo/from_config\",\n"
+        "    \"timeouts_ms\": {\"sat\": 123, \"optimization\": 456},\n"
         "    \"activity\": {\"mode\": \"cartesian\", \"levels\": [0.2, 0.4]}\n"
         "  }\n"
         "}\n");
@@ -111,6 +114,10 @@ void verifyConfigParsingAndCliPrecedence() {
             "Config resume policy was not parsed.");
     require(configOnly.caseTimeoutMs == 42,
             "Config case timeout was not parsed.");
+    require(configOnly.satTimeoutMs == 123 && configOnly.optTimeoutMs == 456,
+            "Grouped generation timeout settings were not parsed.");
+    require(configOnly.abcPath == "/tmp/abc_from_dependencies",
+            "dependencies.abc_path should override legacy tools.abc_path.");
     require(generateActivityPatterns(3, configOnly.activityPatternSpec).size() == 8,
             "Config cartesian activity was not parsed.");
 
@@ -150,12 +157,14 @@ void verifyEvaluationConfigParsing() {
         path,
         "{\n"
         "  \"command\": \"benchmark\",\n"
+        "  \"dependencies\": {\"abc_path\": \"/tmp/abc_for_eval\"},\n"
         "  \"run\": {\"resume_policy\": \"run_all\"},\n"
         "  \"benchmark\": {\n"
         "    \"benchmark_dir\": \"/tmp/benches\",\n"
         "    \"library_dir\": \"results_repo/lib\",\n"
         "    \"verify\": true,\n"
-        "    \"mode\": \"standard\"\n"
+        "    \"mode\": \"standard\",\n"
+        "    \"timeouts_ms\": {\"case\": 700}\n"
         "  }\n"
         "}\n");
 
@@ -166,6 +175,10 @@ void verifyEvaluationConfigParsing() {
     require(opts.libraryDir == fs::path("results_repo/lib"),
             "Evaluation library_dir was not parsed.");
     require(opts.verify, "Evaluation verify was not parsed.");
+    require(opts.abcPath == "/tmp/abc_for_eval",
+            "Evaluation dependencies.abc_path was not parsed.");
+    require(opts.caseTimeoutMs == 700,
+            "Evaluation grouped case timeout was not parsed.");
     fs::remove(path);
 }
 

@@ -494,7 +494,6 @@ int countBlifInputs(const std::string& path) {
 void InnovusBatchEvaluator::runBatchVerification(const std::string& benchmarksDir) {
     namespace fs = std::filesystem;
     auto files = findBlifFilesRecursive(benchmarksDir);
-    std::vector<PPADiff> results;
     std::vector<EvaluationCaseRecord> caseRecords;
 
     const fs::path outputRoot = fs::path(libPath_);
@@ -635,7 +634,6 @@ void InnovusBatchEvaluator::runBatchVerification(const std::string& benchmarksDi
         }
 
         diff.success = (diff.origPPA.valid && diff.abcHighPPA.valid && diff.ponoPPA.valid);
-        results.push_back(diff);
         legacyRows[fileName] = formatStandardValidationRow(diff);
         writeLegacyCsvRows(validationCsv, standardValidationHeader(), legacyRows);
 
@@ -1517,44 +1515,6 @@ std::string fes::InnovusBatchEvaluator::rewriteBlifUnified(
                                  cfg.tag + "_rewrite");
 }
 
-void InnovusBatchEvaluator::exportResultsToCsv(const std::vector<PPADiff>& results) {
-    std::string csvPath = libPath_ + "/ppa_complete_validation.csv";
-    std::ofstream ofs(csvPath);
-
-    if (!ofs.is_open()) return;
-
-    ofs << "Benchmark,"
-        << "Power_Orig(mW),Power_ABC(mW),Power_PONO(mW),Gain_Power_vs_ABC(%),"
-        << "Area_Orig,Area_ABC,Area_PONO,Gain_Area_vs_ABC(%),"
-        << "Delay_Orig(ns),Delay_ABC(ns),Delay_PONO(ns),Gain_Delay_vs_ABC(%),"
-        << "Status\n";
-
-    for (const auto& r : results) {
-        if (!r.success) {
-            ofs << r.fileName << ",,,,,,,,,,,,,FAILED\n";
-            continue;
-        }
-
-        auto calcGain = [](double base, double opt) { 
-            return (base > 0) ? (base - opt) / base * 100.0 : 0.0; 
-        };
-
-        double pGain = calcGain(r.abcHighPPA.power_total, r.ponoPPA.power_total);
-        double aGain = calcGain(r.abcHighPPA.area, r.ponoPPA.area);
-        double dGain = calcGain(r.abcHighPPA.delay, r.ponoPPA.delay);
-
-        ofs << r.fileName << ","
-            << r.origPPA.power_total << "," << r.abcHighPPA.power_total << "," << r.ponoPPA.power_total << ","
-            << std::fixed << std::setprecision(2) << pGain << "%,"
-            << r.origPPA.area << "," << r.abcHighPPA.area << "," << r.ponoPPA.area << ","
-            << aGain << "%,"
-            << r.origPPA.delay << "," << r.abcHighPPA.delay << "," << r.ponoPPA.delay << ","
-            << dGain << "%,"
-            << "SUCCESS\n";
-    }
-    ofs.close();
-}
-
 // 辅助函数：生成随机的临时文件名以防并发冲突
 std::string generateTempFilename() {
     auto now = std::chrono::system_clock::now();
@@ -2098,93 +2058,9 @@ std::string fes::InnovusBatchEvaluator::rewriteMappedBlifWithPONOLibrarySimple(
         mappedBlifPath, actualProbs, hexMappingLib_, "PONO_LIB");
 }
 
-void fes::InnovusBatchEvaluator::exportMappedFourWayResultsToCsv(
-    const std::vector<MappedFourWayResult>& results)
-{
-    std::string csvPath = libPath_ + "/ppa_mapped_four_way_validation.csv";
-    std::ofstream ofs(csvPath);
-    if (!ofs.is_open()) return;
-
-    ofs << "Benchmark,"
-        << "Power_MappedOrig(mW),Area_MappedOrig,Delay_MappedOrig(ns),"
-        << "Power_ABC_Local(mW),Area_ABC_Local,Delay_ABC_Local(ns),"
-        << "Power_ABC_Global(mW),Area_ABC_Global,Delay_ABC_Global(ns),"
-        << "Power_PONO_Local(mW),Area_PONO_Local,Delay_PONO_Local(ns),"
-        << "Gain_Power_ABC_Local_vs_MappedOrig(%),"
-        << "Gain_Power_ABC_Global_vs_MappedOrig(%),"
-        << "Gain_Power_PONO_vs_MappedOrig(%),"
-        << "Gain_Power_PONO_vs_ABC_Local(%),"
-        << "Gain_Power_PONO_vs_ABC_Global(%),"
-        << "Status\n";
-
-    auto calcGain = [](double base, double opt) {
-        return (base > 0) ? (base - opt) / base * 100.0 : 0.0;
-    };
-
-    for (const auto& r : results) {
-        if (!r.success) {
-            ofs << r.fileName << ",";
-
-            if (r.mappedOrigValid) ofs << r.mappedOrigPPA.power_total << "," << r.mappedOrigPPA.area << "," << r.mappedOrigPPA.delay << ",";
-            else ofs << "NA,NA,NA,";
-
-            if (r.abcLocalValid) ofs << r.abcLocalPPA.power_total << "," << r.abcLocalPPA.area << "," << r.abcLocalPPA.delay << ",";
-            else ofs << "NA,NA,NA,";
-
-            if (r.abcGlobalValid) ofs << r.abcGlobalPPA.power_total << "," << r.abcGlobalPPA.area << "," << r.abcGlobalPPA.delay << ",";
-            else ofs << "NA,NA,NA,";
-
-            if (r.ponoLocalValid) ofs << r.ponoLocalPPA.power_total << "," << r.ponoLocalPPA.area << "," << r.ponoLocalPPA.delay << ",";
-            else ofs << "NA,NA,NA,";
-
-            ofs << "NA,NA,NA,NA,NA,PARTIAL\n";
-            continue;
-        }
-
-        double gABC_L_vs_M = calcGain(r.mappedOrigPPA.power_total, r.abcLocalPPA.power_total);
-        double gABC_G_vs_M = calcGain(r.mappedOrigPPA.power_total, r.abcGlobalPPA.power_total);
-        double gPONO_vs_M  = calcGain(r.mappedOrigPPA.power_total, r.ponoLocalPPA.power_total);
-        double gPONO_vs_AL = calcGain(r.abcLocalPPA.power_total, r.ponoLocalPPA.power_total);
-        double gPONO_vs_AG = calcGain(r.abcGlobalPPA.power_total, r.ponoLocalPPA.power_total);
-
-        ofs << r.fileName << ","
-            << r.mappedOrigPPA.power_total << "," << r.mappedOrigPPA.area << "," << r.mappedOrigPPA.delay << ","
-            << r.abcLocalPPA.power_total   << "," << r.abcLocalPPA.area   << "," << r.abcLocalPPA.delay   << ","
-            << r.abcGlobalPPA.power_total  << "," << r.abcGlobalPPA.area  << "," << r.abcGlobalPPA.delay  << ","
-            << r.ponoLocalPPA.power_total  << "," << r.ponoLocalPPA.area  << "," << r.ponoLocalPPA.delay  << ","
-            << std::fixed << std::setprecision(2)
-            << gABC_L_vs_M << ","
-            << gABC_G_vs_M << ","
-            << gPONO_vs_M  << ","
-            << gPONO_vs_AL << ","
-            << gPONO_vs_AG << ","
-            << "SUCCESS\n";
-    }
-}
-
-static int countBlifInputsLocal(const std::string& blifPath) {
-    std::ifstream ifs(blifPath);
-    if (!ifs.is_open()) return 0;
-
-    std::string line;
-    while (std::getline(ifs, line)) {
-        if (line.rfind(".inputs", 0) == 0) {
-            std::stringstream ss(line.substr(7));
-            std::string tok;
-            int cnt = 0;
-            while (ss >> tok) {
-                if (tok != "\\" && !tok.empty()) cnt++;
-            }
-            return cnt;
-        }
-    }
-    return 0;
-}
-
 void fes::InnovusBatchEvaluator::runBatchVerificationMappedFourWay(const std::string& benchmarksDir) {
     namespace fs = std::filesystem;
     auto files = findBlifFilesRecursive(benchmarksDir);
-    std::vector<MappedFourWayResult> results;
     std::vector<EvaluationCaseRecord> caseRecords;
 
     const fs::path outputRoot = fs::path(libPath_);
@@ -2289,7 +2165,6 @@ void fes::InnovusBatchEvaluator::runBatchVerificationMappedFourWay(const std::st
                                ? fallbackReason
                                : mappedFailureReason(diff));
 
-                results.push_back(diff);
                 validationRows[fileName] = formatMappedValidationRow(diff);
                 compareRows[fileName] =
                     formatMappedCompareRow(fileName, origPPA, origValid, diff,

@@ -1,0 +1,33 @@
+{
+  // Copy config/deployment_example.json and replace dependency paths for a machine.
+  "command": "generate",
+  "dependencies": {
+    // Prefer dependencies.abc_path over the legacy tools.abc_path key.
+    "abc_path": "/absolute/path/to/abc",
+    // Relative dependency/resource paths are resolved under the project root.
+    "python_script": "scripts/single_power_run.py",
+    "genlib_path": "resources/nangate_45nm.genlib",
+    "liberty_path": "resources/NangateOpenCellLibrary_typical.lib",
+    "standard_cell_csv": "resources/standard_cells.csv"
+  },
+  "run": {
+    "resume_policy": "run_all",
+    "case_timeout_ms": 0,
+    "threads": 0
+  },
+  "generate": {
+    "k": 4,
+    "num_functions": 1,
+    "function_source": "exhaustive",
+    "output_dir": "deployment_smoke_uniform_k4",
+    "verify": false,
+    "timeouts_ms": {
+      "sat": 10000,
+      "optimization": 60000,
+      "case": 0
+    },
+    "activity": {
+      "mode": "uniform"
+    }
+  }
+}

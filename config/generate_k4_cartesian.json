@@ -1,4 +1,7 @@
 {
+  "dependencies": {
+    "abc_path": "/home/yhs_joker/softwares/abc/abc"
+  },
   "command": "generate",
   "run": {
     "resume_policy": "run_all",
@@ -9,10 +12,13 @@
     "k": 4,
     "num_functions": 1,
     "function_source": "exhaustive",
-    "output_dir": "results_repo/activity_cartesian_k4_num1",
-    "verify": false,
-    "sat_timeout_ms": 10000,
-    "opt_timeout_ms": 60000,
+    "output_dir": "activity_cartesian_k4_num1",
+    "verify": true,
+    "timeouts_ms": {
+      "sat": 10000,
+      "optimization": 600000,
+      "case": 0
+    },
     "activity": {
       "mode": "cartesian",
       "levels": [0.2, 0.4, 0.6, 0.8]

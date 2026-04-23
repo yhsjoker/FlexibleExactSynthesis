@@ -1,4 +1,5 @@
 {
+  // Run with: ./build/fes_app evaluate --config config/evaluate_mapped_four_way.json
   "command": "evaluate",
   "run": {
     "resume_policy": "run_all",
@@ -8,6 +9,8 @@
   "evaluate": {
     "benchmark_dir": "benchmarks",
     "library_dir": "",
+    // Relative non-output paths are project-root-relative, so this points to
+    // <project_root>/results_repo/local_abc_lib.
     "abc_local_library_dir": "results_repo/local_abc_lib",
     "verify": false,
     "mode": "mapped_four_way"

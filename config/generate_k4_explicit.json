@@ -1,16 +1,15 @@
 {
   "command": "generate",
   "run": {
-    "resume_policy": "resume",
+    "resume_policy": "run_all",
     "case_timeout_ms": 0,
     "threads": 0
   },
   "generate": {
     "k": 4,
-    "num_functions": 32,
-    "function_source": "benchmark",
-    "benchmark_dir": "benchmarks",
-    "output_dir": "benchmark_k4_cartesian",
+    "num_functions": 1,
+    "function_source": "exhaustive",
+    "output_dir": "activity_explicit_k4_num1",
     "verify": false,
     "timeouts_ms": {
       "sat": 10000,
@@ -18,8 +17,11 @@
       "case": 0
     },
     "activity": {
-      "mode": "cartesian",
-      "levels": [0.2, 0.4, 0.6, 0.8]
+      "mode": "explicit",
+      "explicit": [
+        [0.1, 0.2, 0.3, 0.4],
+        [0.4, 0.3, 0.2, 0.1]
+      ]
     }
   }
 }

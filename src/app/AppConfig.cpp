@@ -269,6 +269,32 @@ fs::path getPath(const JsonValue& object, const std::string& key) {
     return fs::path(getString(object, key));
 }
 
+void assignStringIfPresent(const JsonValue& object,
+                           const std::string& key,
+                           std::string* target) {
+    const JsonValue* value = findMember(object, key);
+    if (value == nullptr) {
+        return;
+    }
+    if (!value->isString()) {
+        throw std::runtime_error("Config key must be a string: " + key);
+    }
+    *target = value->stringValue;
+}
+
+void assignPathIfPresent(const JsonValue& object,
+                         const std::string& key,
+                         fs::path* target) {
+    const JsonValue* value = findMember(object, key);
+    if (value == nullptr) {
+        return;
+    }
+    if (!value->isString()) {
+        throw std::runtime_error("Config key must be a string: " + key);
+    }
+    *target = fs::path(value->stringValue);
+}
+
 int getInt(const JsonValue& object, const std::string& key, int defaultValue) {
     const JsonValue* value = findMember(object, key);
     if (value == nullptr) {
@@ -299,6 +325,18 @@ bool getBool(const JsonValue& object, const std::string& key, bool defaultValue)
         throw std::runtime_error("Config key must be a bool: " + key);
     }
     return value->boolValue;
+}
+
+const JsonValue* findObjectMember(const JsonValue& object,
+                                  const std::string& key) {
+    const JsonValue* value = findMember(object, key);
+    if (value == nullptr) {
+        return nullptr;
+    }
+    if (!value->isObject()) {
+        throw std::runtime_error("Config key must be an object: " + key);
+    }
+    return value;
 }
 
 std::vector<double> parseNumberArray(const JsonValue& value,
@@ -361,11 +399,14 @@ void applyToolConfig(const JsonValue& root, GenerateOptions* opts) {
     if (tools == nullptr) {
         return;
     }
-    opts->abcPath = getString(*tools, "abc_path", opts->abcPath);
-    opts->genlibPath = getPath(*tools, "genlib_path");
-    opts->libertyPath = getPath(*tools, "liberty_path");
-    opts->pythonScriptPath = getPath(*tools, "python_script");
-    opts->standardCellCsvPath = getPath(*tools, "standard_cell_csv");
+    if (!tools->isObject()) {
+        throw std::runtime_error("Config key must be an object: tools");
+    }
+    assignStringIfPresent(*tools, "abc_path", &opts->abcPath);
+    assignPathIfPresent(*tools, "genlib_path", &opts->genlibPath);
+    assignPathIfPresent(*tools, "liberty_path", &opts->libertyPath);
+    assignPathIfPresent(*tools, "python_script", &opts->pythonScriptPath);
+    assignPathIfPresent(*tools, "standard_cell_csv", &opts->standardCellCsvPath);
 }
 
 void applyToolConfig(const JsonValue& root, EvaluationOptions* opts) {
@@ -373,8 +414,38 @@ void applyToolConfig(const JsonValue& root, EvaluationOptions* opts) {
     if (tools == nullptr) {
         return;
     }
-    opts->abcPath = getString(*tools, "abc_path", opts->abcPath);
-    opts->pythonScriptPath = getPath(*tools, "python_script");
+    if (!tools->isObject()) {
+        throw std::runtime_error("Config key must be an object: tools");
+    }
+    assignStringIfPresent(*tools, "abc_path", &opts->abcPath);
+    assignPathIfPresent(*tools, "python_script", &opts->pythonScriptPath);
+}
+
+void applyDependencyConfig(const JsonValue& root, GenerateOptions* opts) {
+    const JsonValue* dependencies = findMember(root, "dependencies");
+    if (dependencies == nullptr) {
+        return;
+    }
+    if (!dependencies->isObject()) {
+        throw std::runtime_error("Config key must be an object: dependencies");
+    }
+    assignStringIfPresent(*dependencies, "abc_path", &opts->abcPath);
+    assignPathIfPresent(*dependencies, "genlib_path", &opts->genlibPath);
+    assignPathIfPresent(*dependencies, "liberty_path", &opts->libertyPath);
+    assignPathIfPresent(*dependencies, "python_script", &opts->pythonScriptPath);
+    assignPathIfPresent(*dependencies, "standard_cell_csv", &opts->standardCellCsvPath);
+}
+
+void applyDependencyConfig(const JsonValue& root, EvaluationOptions* opts) {
+    const JsonValue* dependencies = findMember(root, "dependencies");
+    if (dependencies == nullptr) {
+        return;
+    }
+    if (!dependencies->isObject()) {
+        throw std::runtime_error("Config key must be an object: dependencies");
+    }
+    assignStringIfPresent(*dependencies, "abc_path", &opts->abcPath);
+    assignPathIfPresent(*dependencies, "python_script", &opts->pythonScriptPath);
 }
 
 void applyActivityConfig(const JsonValue& generate, GenerateOptions* opts) {
@@ -435,6 +506,12 @@ void applyGenerateConfig(const JsonValue& root,
         getInt(*generate, "opt_timeout_ms", opts->optTimeoutMs);
     opts->caseTimeoutMs =
         getInt(*generate, "case_timeout_ms", opts->caseTimeoutMs);
+    if (const JsonValue* timeouts = findObjectMember(*generate, "timeouts_ms")) {
+        opts->satTimeoutMs = getInt(*timeouts, "sat", opts->satTimeoutMs);
+        opts->optTimeoutMs =
+            getInt(*timeouts, "optimization", opts->optTimeoutMs);
+        opts->caseTimeoutMs = getInt(*timeouts, "case", opts->caseTimeoutMs);
+    }
     if (opts->numFunctions < 0 || opts->satTimeoutMs < 0 ||
         opts->optTimeoutMs < 0 || opts->caseTimeoutMs < 0) {
         throw std::runtime_error(
@@ -460,6 +537,9 @@ void applyEvaluationConfig(const JsonValue& root, EvaluationOptions* opts) {
         getString(*evaluation, "mode", "standard") == "mapped_four_way";
     opts->caseTimeoutMs =
         getInt(*evaluation, "case_timeout_ms", opts->caseTimeoutMs);
+    if (const JsonValue* timeouts = findObjectMember(*evaluation, "timeouts_ms")) {
+        opts->caseTimeoutMs = getInt(*timeouts, "case", opts->caseTimeoutMs);
+    }
     if (opts->caseTimeoutMs < 0) {
         throw std::runtime_error(
             "evaluate.case_timeout_ms must be non-negative.");
@@ -582,6 +662,8 @@ AppConfig loadAppConfig(const fs::path& configPath, int maxLutInputs) {
     applyRunConfig(root, &config.evaluation);
     applyToolConfig(root, &config.generate);
     applyToolConfig(root, &config.evaluation);
+    applyDependencyConfig(root, &config.generate);
+    applyDependencyConfig(root, &config.evaluation);
     applyGenerateConfig(root, maxLutInputs, &config.generate);
     applyEvaluationConfig(root, &config.evaluation);
     return config;

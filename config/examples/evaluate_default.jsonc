@@ -1,4 +1,5 @@
 {
+  // Run with: ./build/fes_app evaluate --config config/evaluate_default.json
   "command": "evaluate",
   "run": {
     "resume_policy": "run_all",
@@ -8,8 +9,7 @@
   "evaluate": {
     "benchmark_dir": "benchmarks",
     "library_dir": "",
-    "abc_local_library_dir": "results_repo/local_abc_lib",
     "verify": false,
-    "mode": "mapped_four_way"
+    "mode": "standard"
   }
 }

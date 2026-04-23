@@ -1,4 +1,5 @@
 {
+  // Run with: ./build/fes_app generate --config config/generate_benchmark_k4_cartesian.json
   "command": "generate",
   "run": {
     "resume_policy": "resume",
@@ -9,6 +10,7 @@
     "k": 4,
     "num_functions": 32,
     "function_source": "benchmark",
+    // Replace with an absolute path or a project-root-relative benchmark directory.
     "benchmark_dir": "benchmarks",
     "output_dir": "benchmark_k4_cartesian",
     "verify": false,

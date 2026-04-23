@@ -8,45 +8,50 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # =============================================================
-#  用户配置区 (USER CONFIGURATION)
-#  请在这里填入你的 Z3 和 Kissat 源码/安装的根目录
+#  Dependency roots
 # =============================================================
 
-# TODO: 修改这里为你的 Z3 根目录 (例如: /home/yhs_joker/tools/z3)
-set(USER_Z3_ROOT "/home/yhs_joker/softwares/z3") 
+set(Z3_ROOT "" CACHE PATH "Root directory of a Z3 source/build/install tree")
+set(KISSAT_ROOT "" CACHE PATH "Root directory of a Kissat source/build/install tree")
 
-# TODO: 修改这里为你的 Kissat 根目录 (例如: /home/yhs_joker/tools/kissat)
-set(USER_KISSAT_ROOT "/home/yhs_joker/softwares/kissat")
+if(NOT Z3_ROOT AND DEFINED ENV{Z3_ROOT})
+    set(Z3_ROOT "$ENV{Z3_ROOT}" CACHE PATH "Root directory of a Z3 source/build/install tree" FORCE)
+endif()
+
+if(NOT KISSAT_ROOT AND DEFINED ENV{KISSAT_ROOT})
+    set(KISSAT_ROOT "$ENV{KISSAT_ROOT}" CACHE PATH "Root directory of a Kissat source/build/install tree" FORCE)
+endif()
 
 # =============================================================
 #  1. 查找并配置 Z3 (Z3 Configuration)
 # =============================================================
 message(STATUS "--- Configuring Z3 ---")
-message(STATUS "Searching in root: ${USER_Z3_ROOT}")
+if(Z3_ROOT)
+    message(STATUS "Searching in root: ${Z3_ROOT}")
+else()
+    message(STATUS "Z3_ROOT not set; searching default compiler/system paths")
+endif()
 
 # 1.1 查找头文件 (z3++.h)
 # 搜索顺序: ROOT/src/api/c++, ROOT/src/api, ROOT/include
 find_path(Z3_CXX_HEADER_DIR NAMES z3++.h
-    HINTS ${USER_Z3_ROOT}
+    HINTS ${Z3_ROOT}
     PATH_SUFFIXES src/api/c++ src/api include
-    NO_DEFAULT_PATH
 )
 # 查找 z3.h (有时候它在另一个目录，必须显式包含)
 find_path(Z3_C_HEADER_DIR NAMES z3.h
-    HINTS ${USER_Z3_ROOT}
+    HINTS ${Z3_ROOT}
     PATH_SUFFIXES src/api include
-    NO_DEFAULT_PATH
 )
 
 # 1.2 查找库文件 (libz3.so)
 # 搜索顺序: ROOT/build, ROOT/lib, ROOT/bin
 find_library(Z3_LIB NAMES z3 libz3
-    HINTS ${USER_Z3_ROOT}
+    HINTS ${Z3_ROOT}
     PATH_SUFFIXES build lib bin
-    NO_DEFAULT_PATH
 )
 
-if (Z3_CXX_HEADER_DIR AND Z3_LIB)
+if (Z3_CXX_HEADER_DIR AND Z3_C_HEADER_DIR AND Z3_LIB)
     message(STATUS "  Found Z3 Header: ${Z3_CXX_HEADER_DIR}")
     message(STATUS "  Found Z3 Library: ${Z3_LIB}")
 
@@ -58,27 +63,29 @@ if (Z3_CXX_HEADER_DIR AND Z3_LIB)
         INTERFACE_INCLUDE_DIRECTORIES "${Z3_CXX_HEADER_DIR};${Z3_C_HEADER_DIR}"
     )
 else()
-    message(FATAL_ERROR "Could NOT find Z3 in ${USER_Z3_ROOT}. Please check path and build status.")
+    message(FATAL_ERROR "Could NOT find Z3. Configure with -DZ3_ROOT=/path/to/z3 or install Z3 in a default search path.")
 endif()
 
 # =============================================================
 #  2. 查找并配置 Kissat (Kissat Configuration)
 # =============================================================
 message(STATUS "--- Configuring Kissat ---")
-message(STATUS "Searching in root: ${USER_KISSAT_ROOT}")
+if(KISSAT_ROOT)
+    message(STATUS "Searching in root: ${KISSAT_ROOT}")
+else()
+    message(STATUS "KISSAT_ROOT not set; searching default compiler/system paths")
+endif()
 
 # 2.1 查找头文件 (kissat.h)
 find_path(KISSAT_INCLUDE_DIR NAMES kissat.h
-    HINTS ${USER_KISSAT_ROOT}
+    HINTS ${KISSAT_ROOT}
     PATH_SUFFIXES src include .
-    NO_DEFAULT_PATH
 )
 
 # 2.2 查找库文件 (libkissat.a)
 find_library(KISSAT_LIB NAMES kissat libkissat
-    HINTS ${USER_KISSAT_ROOT}
+    HINTS ${KISSAT_ROOT}
     PATH_SUFFIXES build lib .
-    NO_DEFAULT_PATH
 )
 
 if (KISSAT_INCLUDE_DIR AND KISSAT_LIB)
@@ -86,7 +93,10 @@ if (KISSAT_INCLUDE_DIR AND KISSAT_LIB)
     message(STATUS "  Found Kissat Library: ${KISSAT_LIB}")
     add_compile_definitions(HAS_KISSAT) # 定义宏
 else()
-    message(WARNING "Could NOT find Kissat in ${USER_KISSAT_ROOT}. Continuing without SAT solver support.")
+    if(KISSAT_ROOT)
+        message(FATAL_ERROR "Could NOT find Kissat in ${KISSAT_ROOT}. Check -DKISSAT_ROOT or leave it empty to build without Kissat.")
+    endif()
+    message(WARNING "Could NOT find Kissat. Continuing without Kissat-backed SAT solver support.")
 endif()
 
 # =============================================================
@@ -111,6 +121,7 @@ enable_testing()
 file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS "src/*.cpp")
 list(FILTER SOURCES EXCLUDE REGEX ".*/src/tests/.*\\.cpp$")
 add_executable(fes_app ${SOURCES})
+target_compile_definitions(fes_app PRIVATE FES_PROJECT_ROOT="${PROJECT_SOURCE_DIR}")
 target_link_libraries(fes_app PRIVATE Z3::Z3)
 if(KISSAT_LIB)
     target_link_libraries(fes_app PRIVATE ${KISSAT_LIB})
