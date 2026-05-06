@@ -1,0 +1,1009 @@
+2026/05/06 05:38:19 WARNING This OS does not appear to be a Cadence supported Linux configuration.
+2026/05/06 05:38:19 For more info, please run CheckSysConf in <cdsRoot/tools.lnx86/bin/checkSysConf <productId>
+
+Cadence Innovus(TM) Implementation System.
+Copyright 2020 Cadence Design Systems, Inc. All rights reserved worldwide.
+
+Version:	v20.10-p004_1, built Thu May 7 20:02:41 PDT 2020
+Options:	-nowin -init top.run.tcl -log innovus.log -overwrite 
+Date:		Wed May  6 05:38:19 2026
+Host:		ubuntu (x86_64 w/Linux 5.15.0-139-generic) (1core*2cpus*13th Gen Intel(R) Core(TM) i5-13600KF 24576KB)
+OS:		Unsupported OS as /etc does not have release info
+
+License:
+		invs	Innovus Implementation System	20.1	checkout succeeded
+		8 CPU jobs allowed with the current license(s). Use setMultiCpuUsage to set your required CPU count.
+**WARN: (IMPOPT-801):	Genus executable not found in PATH. Install Genus, add the path to the genus executable in the PATH variable and rerun Innovus.
+Create and set the environment variable TMPDIR to /tmp/innovus_temp_84858_ubuntu_joker_6wEkOL.
+
+The soft stacksize limit is either up to the hard limit or larger than 0.2% of RAM. No change is needed.
+
+**INFO:  MMMC transition support version v31-84 
+
+Sourcing file "top.run.tcl" ...
+#% Begin Load MMMC data ... (date=05/06 05:38:30, mem=628.1M)
+#% End Load MMMC data ... (date=05/06 05:38:30, total cpu=0:00:00.0, real=0:00:00.0, peak res=628.1M, current mem=628.1M)
+
+Loading LEF file /home/joker/remote_work/lib/NanGate_15nm_OCL.tech.lef ...
+**WARN: (IMPLF-122):	The direction of the layer 'MSMT1' is the same as
+the previous routing layer. Make sure this is on purpose or correct
+the direction of the layer. In most cases, the routing layers
+alternate in direction between HORIZONTAL and VERTICAL.
+**WARN: (IMPLF-104):	The layers 'V1' and 'VINT2' specified in
+SAMENET spacing rule are not neighboring to each other. The rule
+is ignored.
+
+Loading LEF file /home/joker/remote_work/lib/NanGate_15nm_OCL.macro.lef ...
+**ERROR: (IMPLF-285):	The layer 'MSMT1' does not have SPACING or
+SPACINGTABLE statement, so there is no spacing rule for this layer,
+which is a semantic error. A minimum spacing value of 0.016000um has been
+set to avoid application failures. This value is almost certainly wrong
+and can cause real DRC errors to be missed. It is highly recommended to
+fix this problem before going further.
+Set DBUPerIGU to M1 pitch 128.
+This command "init_design" required an extra checkout of license invs_20nm.
+Additional license(s) checked out: 1 'Innovus_20nm_Opt' license(s)
+
+viaInitial starts at Wed May  6 05:38:30 2026
+**WARN: (IMPPP-546):	The power planner will ignore via rule 'Via1Array-0' because the via rule contains geometry mismatches.
+**WARN: (IMPPP-546):	The power planner will ignore via rule 'Via1Array-1' because the via rule contains geometry mismatches.
+**WARN: (IMPPP-546):	The power planner will ignore via rule 'Via1Array-2' because the via rule contains geometry mismatches.
+**WARN: (IMPPP-546):	The power planner will ignore via rule 'Via1Array-3' because the via rule contains geometry mismatches.
+**WARN: (IMPPP-546):	The power planner will ignore via rule 'Via1Array-4' because the via rule contains geometry mismatches.
+**WARN: (IMPPP-546):	The power planner will ignore via rule 'Via1Array-5' because the via rule contains geometry mismatches.
+**WARN: (IMPPP-546):	The power planner will ignore via rule 'Via1Array-6' because the via rule contains geometry mismatches.
+**WARN: (IMPPP-546):	The power planner will ignore via rule 'Via1Array-7' because the via rule contains geometry mismatches.
+viaInitial ends at Wed May  6 05:38:30 2026
+
+##  Check design process and node:  
+##  Both design process and tech node are not set.
+
+Loading view definition file from mmmc.view
+Starting library reading in 'Multi-threaded flow' (with '2' threads)
+
+Threads Configured:2
+Reading typical_lib_set timing library /home/joker/remote_work/lib/NangateOpenCellLibrary_typical.lib.
+**ERROR: (TECHLIB-1346):	The attribute 'index_1' defined in group 'ecsm_waveform' on line 393850 is not monotonically increasing for values '0.000041' to '0.000037'. This may lead to undesirable analysis results. The attribute will be ignored. (File /home/joker/remote_work/lib/NangateOpenCellLibrary_typical.lib)
+**ERROR: (TECHLIB-1256):	The ecsm_waveform group 1 is being ignored due to errors in this group. This group will be excluded for any further library checks. Refer to the previous messages issued for ecsm_waveform group 1 to find the details of the issues in this group. (File /home/joker/remote_work/lib/NangateOpenCellLibrary_typical.lib, Line 393849)
+**ERROR: (TECHLIB-420):	Number of ecsm_waveforms in the 'rise_transition' table on pin ZN of cell OAI222_X2 does not match the number of transition table axis points specified in the template 'Timing_7_7'. Ignoring waveform data. (File /home/joker/remote_work/lib/NangateOpenCellLibrary_typical.lib, Line 393835)
+**ERROR: (TECHLIB-1346):	The attribute 'index_1' defined in group 'ecsm_waveform' on line 395710 is not monotonically increasing for values '0.000041' to '0.000037'. This may lead to undesirable analysis results. The attribute will be ignored. (File /home/joker/remote_work/lib/NangateOpenCellLibrary_typical.lib)
+**ERROR: (TECHLIB-1256):	The ecsm_waveform group 1 is being ignored due to errors in this group. This group will be excluded for any further library checks. Refer to the previous messages issued for ecsm_waveform group 1 to find the details of the issues in this group. (File /home/joker/remote_work/lib/NangateOpenCellLibrary_typical.lib, Line 395709)
+**ERROR: (TECHLIB-420):	Number of ecsm_waveforms in the 'rise_transition' table on pin ZN of cell OAI222_X2 does not match the number of transition table axis points specified in the template 'Timing_7_7'. Ignoring waveform data. (File /home/joker/remote_work/lib/NangateOpenCellLibrary_typical.lib, Line 395695)
+Read 134 cells in library NangateOpenCellLibrary.
+Library reading multithread flow ended.
+*** End library_loading (cpu=0.02min, real=0.02min, mem=96.0M, fe_cpu=0.28min, fe_real=0.20min, fe_mem=768.0M) ***
+#% Begin Load netlist data ... (date=05/06 05:38:31, mem=657.4M)
+*** Begin netlist parsing (mem=768.0M) ***
+**WARN: (IMPVL-159):	Pin 'A1' of cell 'XOR2_X1' is defined in LEF but not in the timing library.
+Type 'man IMPVL-159' for more detail.
+**WARN: (IMPVL-159):	Pin 'A2' of cell 'XOR2_X1' is defined in LEF but not in the timing library.
+Type 'man IMPVL-159' for more detail.
+**WARN: (IMPVL-159):	Pin 'A1' of cell 'XNOR2_X1' is defined in LEF but not in the timing library.
+Type 'man IMPVL-159' for more detail.
+**WARN: (IMPVL-159):	Pin 'A2' of cell 'XNOR2_X1' is defined in LEF but not in the timing library.
+Type 'man IMPVL-159' for more detail.
+**WARN: (IMPVL-159):	Pin 'I' of cell 'TBUF_X16' is defined in LEF but not in the timing library.
+Type 'man IMPVL-159' for more detail.
+**WARN: (IMPVL-159):	Pin 'I' of cell 'TBUF_X8' is defined in LEF but not in the timing library.
+Type 'man IMPVL-159' for more detail.
+**WARN: (IMPVL-159):	Pin 'I' of cell 'TBUF_X4' is defined in LEF but not in the timing library.
+Type 'man IMPVL-159' for more detail.
+**WARN: (IMPVL-159):	Pin 'I' of cell 'TBUF_X2' is defined in LEF but not in the timing library.
+Type 'man IMPVL-159' for more detail.
+**WARN: (IMPVL-159):	Pin 'I' of cell 'TBUF_X1' is defined in LEF but not in the timing library.
+Type 'man IMPVL-159' for more detail.
+**WARN: (IMPVL-159):	Pin 'Z' of cell 'OR4_X2' is defined in LEF but not in the timing library.
+Type 'man IMPVL-159' for more detail.
+**WARN: (IMPVL-159):	Pin 'Z' of cell 'OR4_X1' is defined in LEF but not in the timing library.
+Type 'man IMPVL-159' for more detail.
+**WARN: (IMPVL-159):	Pin 'Z' of cell 'OR3_X2' is defined in LEF but not in the timing library.
+Type 'man IMPVL-159' for more detail.
+**WARN: (IMPVL-159):	Pin 'Z' of cell 'OR3_X1' is defined in LEF but not in the timing library.
+Type 'man IMPVL-159' for more detail.
+**WARN: (IMPVL-159):	Pin 'Z' of cell 'OR2_X2' is defined in LEF but not in the timing library.
+Type 'man IMPVL-159' for more detail.
+**WARN: (IMPVL-159):	Pin 'Z' of cell 'OR2_X1' is defined in LEF but not in the timing library.
+Type 'man IMPVL-159' for more detail.
+**WARN: (IMPVL-159):	Pin 'A1' of cell 'OAI21_X2' is defined in LEF but not in the timing library.
+Type 'man IMPVL-159' for more detail.
+**WARN: (IMPVL-159):	Pin 'A2' of cell 'OAI21_X2' is defined in LEF but not in the timing library.
+Type 'man IMPVL-159' for more detail.
+**WARN: (IMPVL-159):	Pin 'B' of cell 'OAI21_X2' is defined in LEF but not in the timing library.
+Type 'man IMPVL-159' for more detail.
+**WARN: (IMPVL-159):	Pin 'A1' of cell 'OAI21_X1' is defined in LEF but not in the timing library.
+Type 'man IMPVL-159' for more detail.
+**WARN: (IMPVL-159):	Pin 'A2' of cell 'OAI21_X1' is defined in LEF but not in the timing library.
+Type 'man IMPVL-159' for more detail.
+**WARN: (EMS-27):	Message (IMPVL-159) has exceeded the current message display limit of 20.
+To increase the message display limit, refer to the product command reference manual.
+Created 134 new cells from 1 timing libraries.
+Reading netlist ...
+Backslashed names will retain backslash and a trailing blank character.
+Reading verilog netlist 'top.v'
+
+*** Memory Usage v#1 (Current mem = 767.988M, initial mem = 273.887M) ***
+*** End netlist parsing (cpu=0:00:00.0, real=0:00:00.0, mem=768.0M) ***
+#% End Load netlist data ... (date=05/06 05:38:31, total cpu=0:00:00.0, real=0:00:00.0, peak res=664.7M, current mem=664.7M)
+Set top cell to top.
+**WARN: (IMPTS-124):	Timing library description of pin 'A2' is missing from cell 'XOR2_X1' in timing library 'NangateOpenCellLibrary'.
+**WARN: (IMPTS-124):	Timing library description of pin 'A1' is missing from cell 'XOR2_X1' in timing library 'NangateOpenCellLibrary'.
+**WARN: (IMPTS-124):	Timing library description of pin 'A2' is missing from cell 'XNOR2_X1' in timing library 'NangateOpenCellLibrary'.
+**WARN: (IMPTS-124):	Timing library description of pin 'A1' is missing from cell 'XNOR2_X1' in timing library 'NangateOpenCellLibrary'.
+**WARN: (IMPTS-124):	Timing library description of pin 'I' is missing from cell 'TBUF_X16' in timing library 'NangateOpenCellLibrary'.
+**WARN: (IMPTS-124):	Timing library description of pin 'I' is missing from cell 'TBUF_X8' in timing library 'NangateOpenCellLibrary'.
+**WARN: (IMPTS-124):	Timing library description of pin 'I' is missing from cell 'TBUF_X4' in timing library 'NangateOpenCellLibrary'.
+**WARN: (IMPTS-124):	Timing library description of pin 'I' is missing from cell 'TBUF_X2' in timing library 'NangateOpenCellLibrary'.
+**WARN: (IMPTS-124):	Timing library description of pin 'I' is missing from cell 'TBUF_X1' in timing library 'NangateOpenCellLibrary'.
+**WARN: (IMPTS-124):	Timing library description of pin 'Z' is missing from cell 'OR4_X2' in timing library 'NangateOpenCellLibrary'.
+**WARN: (IMPTS-124):	Timing library description of pin 'Z' is missing from cell 'OR4_X1' in timing library 'NangateOpenCellLibrary'.
+**WARN: (IMPTS-124):	Timing library description of pin 'Z' is missing from cell 'OR3_X2' in timing library 'NangateOpenCellLibrary'.
+**WARN: (IMPTS-124):	Timing library description of pin 'Z' is missing from cell 'OR3_X1' in timing library 'NangateOpenCellLibrary'.
+**WARN: (IMPTS-124):	Timing library description of pin 'Z' is missing from cell 'OR2_X2' in timing library 'NangateOpenCellLibrary'.
+**WARN: (IMPTS-124):	Timing library description of pin 'Z' is missing from cell 'OR2_X1' in timing library 'NangateOpenCellLibrary'.
+**WARN: (IMPTS-124):	Timing library description of pin 'B' is missing from cell 'OAI21_X2' in timing library 'NangateOpenCellLibrary'.
+**WARN: (IMPTS-124):	Timing library description of pin 'A2' is missing from cell 'OAI21_X2' in timing library 'NangateOpenCellLibrary'.
+**WARN: (IMPTS-124):	Timing library description of pin 'A1' is missing from cell 'OAI21_X2' in timing library 'NangateOpenCellLibrary'.
+**WARN: (IMPTS-124):	Timing library description of pin 'B' is missing from cell 'OAI21_X1' in timing library 'NangateOpenCellLibrary'.
+**WARN: (IMPTS-124):	Timing library description of pin 'A2' is missing from cell 'OAI21_X1' in timing library 'NangateOpenCellLibrary'.
+**WARN: (EMS-27):	Message (IMPTS-124) has exceeded the current message display limit of 20.
+To increase the message display limit, refer to the product command reference manual.
+Hooked 134 DB cells to tlib cells.
+** Removed 79 unused lib cells.
+Starting recursive module instantiation check.
+No recursion found.
+Building hierarchical netlist for Cell top ...
+*** Netlist is unique.
+** info: there are 77 modules.
+** info: there are 357 stdCell insts.
+
+*** Memory Usage v#1 (Current mem = 778.488M, initial mem = 273.887M) ***
+
+Honor LEF defined pitches for advanced node
+Set Default Net Delay as 1000 ps.
+Set Default Net Load as 0.5 pF. 
+Set Default Input Pin Transition as 0.1 ps.
+Extraction setup Started 
+Initializing multi-corner RC extraction with 1 active RC Corners ...
+**WARN: (IMPEXT-2773):	The via resistance between layers M0 and M1 could not be determined from the LEF technology file because the via resistance specification is missing. A default of 4 Ohms will be used as via resistance between these layers.
+Type 'man IMPEXT-2773' for more detail.
+**WARN: (IMPEXT-2773):	The via resistance between layers M1 and M2 could not be determined from the LEF technology file because the via resistance specification is missing. A default of 4 Ohms will be used as via resistance between these layers.
+Type 'man IMPEXT-2773' for more detail.
+**WARN: (IMPEXT-2773):	The via resistance between layers M2 and M3 could not be determined from the LEF technology file because the via resistance specification is missing. A default of 4 Ohms will be used as via resistance between these layers.
+Type 'man IMPEXT-2773' for more detail.
+**WARN: (IMPEXT-2773):	The via resistance between layers M3 and M4 could not be determined from the LEF technology file because the via resistance specification is missing. A default of 4 Ohms will be used as via resistance between these layers.
+Type 'man IMPEXT-2773' for more detail.
+**WARN: (IMPEXT-2773):	The via resistance between layers M4 and M5 could not be determined from the LEF technology file because the via resistance specification is missing. A default of 4 Ohms will be used as via resistance between these layers.
+Type 'man IMPEXT-2773' for more detail.
+**WARN: (IMPEXT-2773):	The via resistance between layers M5 and M6 could not be determined from the LEF technology file because the via resistance specification is missing. A default of 4 Ohms will be used as via resistance between these layers.
+Type 'man IMPEXT-2773' for more detail.
+**WARN: (IMPEXT-2773):	The via resistance between layers M6 and M7 could not be determined from the LEF technology file because the via resistance specification is missing. A default of 4 Ohms will be used as via resistance between these layers.
+Type 'man IMPEXT-2773' for more detail.
+**WARN: (IMPEXT-2766):	The sheet resistance for layer M1 is not defined in the cap table. Therefore, the LEF value 0.076 will be used instead. To avoid this message, update the relevant cap table to include the sheet resistance for the specified layer and read it back in.
+**WARN: (IMPEXT-2766):	The sheet resistance for layer M2 is not defined in the cap table. Therefore, the LEF value 0.076 will be used instead. To avoid this message, update the relevant cap table to include the sheet resistance for the specified layer and read it back in.
+**WARN: (IMPEXT-2766):	The sheet resistance for layer M3 is not defined in the cap table. Therefore, the LEF value 0.076 will be used instead. To avoid this message, update the relevant cap table to include the sheet resistance for the specified layer and read it back in.
+**WARN: (IMPEXT-2766):	The sheet resistance for layer M4 is not defined in the cap table. Therefore, the LEF value 0.076 will be used instead. To avoid this message, update the relevant cap table to include the sheet resistance for the specified layer and read it back in.
+**WARN: (IMPEXT-2766):	The sheet resistance for layer M5 is not defined in the cap table. Therefore, the LEF value 0.044 will be used instead. To avoid this message, update the relevant cap table to include the sheet resistance for the specified layer and read it back in.
+**WARN: (IMPEXT-2766):	The sheet resistance for layer M6 is not defined in the cap table. Therefore, the LEF value 0.076 will be used instead. To avoid this message, update the relevant cap table to include the sheet resistance for the specified layer and read it back in.
+**WARN: (IMPEXT-2766):	The sheet resistance for layer M7 is not defined in the cap table. Therefore, the LEF value 0.076 will be used instead. To avoid this message, update the relevant cap table to include the sheet resistance for the specified layer and read it back in.
+Summary of Active RC-Corners : 
+ 
+ Analysis View: typical_view
+    RC-Corner Name        : default_rc_corner
+    RC-Corner Index       : 0
+    RC-Corner Temperature : 25 Celsius
+    RC-Corner Cap Table   : ''
+    RC-Corner PreRoute Res Factor         : 1
+    RC-Corner PreRoute Cap Factor         : 1
+    RC-Corner PostRoute Res Factor        : 1 {1 1 1}
+    RC-Corner PostRoute Cap Factor        : 1 {1 1 1}
+    RC-Corner PostRoute XCap Factor       : 1 {1 1 1}
+    RC-Corner PreRoute Clock Res Factor   : 1	[Derived from Cap Table]
+    RC-Corner PreRoute Clock Cap Factor   : 1	[Derived from Cap Table]
+    RC-Corner PostRoute Clock Cap Factor  : 1 {1 1 1} 	[Derived from postRoute_cap (effortLevel low)]
+    RC-Corner PostRoute Clock Res Factor  : 1 {1 1 1} 	[Derived from postRoute_res (effortLevel low)]
+Updating RC grid for preRoute extraction ...
+Initializing multi-corner resistance tables ...
+*Info: initialize multi-corner CTS.
+Reading timing constraints file 'top.sdc' ...
+Current (total cpu=0:00:17.7, real=0:00:12.0, peak res=854.5M, current mem=853.9M)
+**WARN: (TCLCMD-1142):	Virtual clock 'virtual_clk' is being created with no source objects. (File top.sdc, Line 1).
+
+INFO (CTE): Reading of timing constraints file top.sdc completed, with 1 WARNING
+Ending "Constraint file reading stats" (total cpu=0:00:00.0, real=0:00:00.0, peak res=873.6M, current mem=873.6M)
+Current (total cpu=0:00:17.8, real=0:00:12.0, peak res=873.6M, current mem=873.6M)
+Total number of combinational cells: 49
+Total number of sequential cells: 1
+Total number of tristate cells: 5
+Total number of level shifter cells: 0
+Total number of power gating cells: 0
+Total number of isolation cells: 0
+Total number of power switch cells: 0
+Total number of pulse generator cells: 0
+Total number of always on buffers: 0
+Total number of retention cells: 0
+List of usable buffers:
+Total number of usable buffers: 0
+List of unusable buffers:
+Total number of unusable buffers: 0
+List of usable inverters:
+Total number of usable inverters: 0
+List of unusable inverters:
+Total number of unusable inverters: 0
+List of identified usable delay cells:
+Total number of identified usable delay cells: 0
+List of identified unusable delay cells:
+Total number of identified unusable delay cells: 0
+No delay cells were detected in the set of buffers. Buffers will be used to fix hold violations.
+**WARN: (IMPOPT-3000):	Buffer footprint is not defined or is an invalid buffer footprint.
+Type 'man IMPOPT-3000' for more detail.
+**WARN: (IMPOPT-3001):	Inverter footprint is not defined or is an invalid inverter footprint.
+Type 'man IMPOPT-3001' for more detail.
+
+*** Summary of all messages that are not suppressed in this session:
+Severity  ID               Count  Summary                                  
+ERROR     IMPLF-285            1  The layer '%s' does not have SPACING or ...
+WARNING   IMPLF-104            1  The layers '%s' and '%s' specified in SA...
+WARNING   IMPLF-122            1  The direction of the layer '%s' is the s...
+WARNING   IMPTS-124           50  Timing library description of pin '%s' i...
+WARNING   IMPEXT-2766          7  The sheet resistance for layer %s is not...
+WARNING   IMPEXT-2773          7  The via resistance between layers %s and...
+WARNING   IMPVL-159           50  Pin '%s' of cell '%s' is defined in LEF ...
+WARNING   IMPPP-546            8  The power planner will ignore via rule '...
+WARNING   IMPOPT-3000          1  Buffer footprint is not defined or is an...
+WARNING   IMPOPT-3001          1  Inverter footprint is not defined or is ...
+WARNING   TCLCMD-1142          1  Virtual clock '%s' is being created with...
+ERROR     TECHLIB-420          2  Number of ecsm_waveforms in the '%s' tab...
+ERROR     TECHLIB-1256         2  The %s is being ignored due to errors in...
+ERROR     TECHLIB-1346         2  The attribute '%s' defined in group '%s'...
+*** Message Summary: 127 warning(s), 7 error(s)
+
+'set_default_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+'set_switching_activity' finished successfully.
+Setting timing_disable_library_data_to_data_checks to 'true'.
+Setting timing_disable_user_data_to_data_checks to 'true'.
+Multithreaded Timing Analysis is initialized with 2 threads
+
+Set Using Default Delay Limit as 101.
+**WARN: (IMPDC-1629):	The default delay limit was set to 101. This is less than the default of 1000 and may result in inaccurate delay calculation for nets with a fanout higher than the setting.  If needed, the default delay limit may be adjusted by running the command 'set delaycal_use_default_delay_limit'.
+Setting High Fanout Nets ( > 100 ) as ideal temporarily for -prePlace option
+Set Default Net Delay as 0 ps.
+Set Default Net Load as 0 pF. 
+Starting delay calculation for Setup views
+**WARN: (IMPESI-3505):	setDelayCalMode -eng_copyNetPropToNewNet true (default=false) will be obsoleted along with its sgs2set equivalent.  This parameter will continue to be supported in the current release, but will be removed in the next major release of the software.
+AAE DB initialization (MEM=1120.78 CPU=0:00:00.0 REAL=0:00:00.0) 
+#################################################################################
+# Design Stage: PreRoute
+# Design Name: top
+# Design Mode: 90nm
+# Analysis Mode: MMMC Non-OCV 
+# Parasitics Mode: No SPEF/RCDB
+# Signoff Settings: SI Off 
+#################################################################################
+Calculate delays in Single mode...
+Start delay calculation (fullDC) (2 T). (MEM=1168.08)
+siFlow : Timing analysis mode is single, using late cdB files
+Total number of fetched objects 511
+AAE_INFO: Total number of nets for which stage creation was skipped for all views 0
+End delay calculation. (MEM=1276.09 CPU=0:00:00.1 REAL=0:00:00.0)
+End delay calculation (fullDC). (MEM=1276.09 CPU=0:00:00.5 REAL=0:00:00.0)
+*** Done Building Timing Graph (cpu=0:00:00.9 real=0:00:01.0 totSessionCpu=0:00:19.0 mem=1268.1M)
+
+------------------------------------------------------------
+          timeDesign Summary                             
+------------------------------------------------------------
+
+Setup views included:
+ typical_view 
+
++--------------------+---------+---------+
+|     Setup mode     |   all   | default |
++--------------------+---------+---------+
+|           WNS (ns):|  9.215  |  9.215  |
+|           TNS (ns):|  0.000  |  0.000  |
+|    Violating Paths:|    0    |    0    |
+|          All Paths:|    3    |    3    |
++--------------------+---------+---------+
+
+Density: 70.165%
+------------------------------------------------------------
+Set Using Default Delay Limit as 1000.
+Resetting back High Fanout Nets as non-ideal
+Set Default Net Delay as 1000 ps.
+Set Default Net Load as 0.5 pF. 
+Reported timing to dir ./timingReports
+Total CPU time: 1.2 sec
+Total Real time: 2.0 sec
+Total Memory Usage: 1167.882812 Mbytes
+
+Power Net Detected:
+        Voltage	    Name
+             0V	    VSS
+           1.1V	    VDD
+Using Power View: typical_view.
+#################################################################################
+# Design Stage: PreRoute
+# Design Name: top
+# Design Mode: 90nm
+# Analysis Mode: MMMC Non-OCV 
+# Parasitics Mode: No SPEF/RCDB
+# Signoff Settings: SI Off 
+#################################################################################
+Calculate delays in Single mode...
+Start delay calculation (fullDC) (2 T). (MEM=1193.4)
+Total number of fetched objects 511
+AAE_INFO: Total number of nets for which stage creation was skipped for all views 0
+End delay calculation. (MEM=1281.8 CPU=0:00:00.1 REAL=0:00:00.0)
+End delay calculation (fullDC). (MEM=1281.8 CPU=0:00:00.1 REAL=0:00:00.0)
+
+Begin Power Analysis
+
+             0V	    VSS
+           1.1V	    VDD
+
+Warning:
+  There are 2 power/gnd nets that are not connected
+VSS VDD ...
+Use 'globalNetConnect' to define rail connections.
+** WARN:  (VOLTUS_POWR-2035): There are 2 power/gnd nets that are not connected
+VSS VDD ...
+Use 'globalNetConnect' to define rail connections.
+
+
+
+Begin Processing Timing Library for Power Calculation
+
+Begin Processing Timing Library for Power Calculation
+
+
+
+Begin Processing Power Net/Grid for Power Calculation
+
+Ended Processing Power Net/Grid for Power Calculation: (cpu=0:00:00, real=0:00:00, mem(process/total/peak)=1043.34MB/2157.00MB/1043.34MB)
+
+Begin Processing Timing Window Data for Power Calculation
+
+virtual_clk(100MHz) Ended Processing Timing Window Data for Power Calculation: (cpu=0:00:00, real=0:00:00, mem(process/total/peak)=1043.34MB/2157.00MB/1043.34MB)
+
+Begin Processing User Attributes
+
+Ended Processing User Attributes: (cpu=0:00:00, real=0:00:00, mem(process/total/peak)=1043.34MB/2157.00MB/1043.34MB)
+
+Begin Processing Signal Activity
+
+
+Starting Levelizing
+2026-May-06 05:38:33 (2026-May-06 12:38:33 GMT)
+2026-May-06 05:38:33 (2026-May-06 12:38:33 GMT): 10%
+2026-May-06 05:38:33 (2026-May-06 12:38:33 GMT): 20%
+2026-May-06 05:38:33 (2026-May-06 12:38:33 GMT): 30%
+2026-May-06 05:38:33 (2026-May-06 12:38:33 GMT): 40%
+2026-May-06 05:38:33 (2026-May-06 12:38:33 GMT): 50%
+2026-May-06 05:38:33 (2026-May-06 12:38:33 GMT): 60%
+2026-May-06 05:38:33 (2026-May-06 12:38:33 GMT): 70%
+2026-May-06 05:38:33 (2026-May-06 12:38:33 GMT): 80%
+2026-May-06 05:38:33 (2026-May-06 12:38:33 GMT): 90%
+
+Finished Levelizing
+2026-May-06 05:38:33 (2026-May-06 12:38:33 GMT)
+
+Starting Activity Propagation
+2026-May-06 05:38:33 (2026-May-06 12:38:33 GMT)
+2026-May-06 05:38:33 (2026-May-06 12:38:33 GMT): 10%
+2026-May-06 05:38:33 (2026-May-06 12:38:33 GMT): 20%
+2026-May-06 05:38:33 (2026-May-06 12:38:33 GMT): 30%
+2026-May-06 05:38:33 (2026-May-06 12:38:33 GMT): 40%
+2026-May-06 05:38:33 (2026-May-06 12:38:33 GMT): 50%
+2026-May-06 05:38:33 (2026-May-06 12:38:33 GMT): 60%
+2026-May-06 05:38:33 (2026-May-06 12:38:33 GMT): 70%
+2026-May-06 05:38:33 (2026-May-06 12:38:33 GMT): 80%
+
+Finished Activity Propagation
+2026-May-06 05:38:33 (2026-May-06 12:38:33 GMT)
+Ended Processing Signal Activity: (cpu=0:00:00, real=0:00:00, mem(process/total/peak)=1044.09MB/2157.00MB/1044.09MB)
+
+Begin Power Computation
+
+      ----------------------------------------------------------
+      # of cell(s) missing both power/leakage table: 0
+      # of cell(s) missing power table: 0
+      # of cell(s) missing leakage table: 0
+      # of MSMV cell(s) missing power_level: 0
+      ----------------------------------------------------------
+
+
+
+Starting Calculating power
+2026-May-06 05:38:33 (2026-May-06 12:38:33 GMT)
+  Cannot locate supply power rail for net '_000_' of instance _349_
+  Cannot locate supply power rail for net '_001_' of instance _350_
+  Cannot locate supply power rail for net '_002_' of instance _351_
+  Cannot locate supply power rail for net '_003_' of instance _352_
+  Cannot locate supply power rail for net '_004_' of instance _353_
+  only first five unconnected nets are listed...
+2026-May-06 05:38:33 (2026-May-06 12:38:33 GMT): 10%
+2026-May-06 05:38:33 (2026-May-06 12:38:33 GMT): 20%
+2026-May-06 05:38:33 (2026-May-06 12:38:33 GMT): 30%
+2026-May-06 05:38:33 (2026-May-06 12:38:33 GMT): 40%
+2026-May-06 05:38:33 (2026-May-06 12:38:33 GMT): 50%
+2026-May-06 05:38:33 (2026-May-06 12:38:33 GMT): 60%
+2026-May-06 05:38:33 (2026-May-06 12:38:33 GMT): 70%
+2026-May-06 05:38:33 (2026-May-06 12:38:33 GMT): 80%
+2026-May-06 05:38:33 (2026-May-06 12:38:33 GMT): 90%
+
+Finished Calculating power
+2026-May-06 05:38:33 (2026-May-06 12:38:33 GMT)
+Ended Power Computation: (cpu=0:00:00, real=0:00:00, mem(process/total/peak)=1119.05MB/2175.00MB/1119.05MB)
+
+Begin Processing User Attributes
+
+Ended Processing User Attributes: (cpu=0:00:00, real=0:00:00, mem(process/total/peak)=1119.05MB/2175.00MB/1119.05MB)
+
+Ended Power Analysis: (cpu=0:00:00, real=0:00:00, mem(process/total/peak)=1119.05MB/2175.00MB/1119.05MB)
+
+Begin Boundary Leakage Calculation
+Ended Boundary Leakage Calculation: (cpu=0:00:00, real=0:00:00,
+mem(process/total/peak)=1119.05MB/2175.00MB/1119.05MB)
+Begin Static Power Report Generation
+*----------------------------------------------------------------------------------------
+*	Innovus 20.10-p004_1 (64bit) 05/07/2020 20:02 (Linux 2.6.32-431.11.2.el6.x86_64)
+*	
+*
+* 	Date & Time:	2026-May-06 05:38:33 (2026-May-06 12:38:33 GMT)
+*
+*----------------------------------------------------------------------------------------
+*
+*	Design: top
+*
+*	Liberty Libraries used:
+*	        typical_view: /home/joker/remote_work/lib/NangateOpenCellLibrary_typical.lib
+*
+*	Parasitic Files used:
+*
+*       Power View : typical_view
+*
+*       User-Defined: net A[0] activity : 0.517518
+*
+*       User-Defined: net A[1] activity : 0.516517
+*
+*       User-Defined: net A[2] activity : 0.526527
+*
+*       User-Defined: net A[3] activity : 0.491491
+*
+*       User-Defined: net A[4] activity : 0.524525
+*
+*       User-Defined: net A[5] activity : 0.481481
+*
+*       User-Defined: net A[6] activity : 0.514515
+*
+*       User-Defined: net A[7] activity : 0.486486
+*
+*       User-Defined: net A[8] activity : 0.466466
+*
+*       User-Defined: net A[9] activity : 0.495495
+*
+*       User-Defined: net A[10] activity : 0.500501
+*
+*       User-Defined: net A[11] activity : 0.499499
+*
+*       User-Defined: net A[12] activity : 0.536537
+*
+*       User-Defined: net A[13] activity : 0.485485
+*
+*       User-Defined: net A[14] activity : 0.512513
+*
+*       User-Defined: net A[15] activity : 0.494494
+*
+*       User-Defined: net A[16] activity : 0.505506
+*
+*       User-Defined: net A[17] activity : 0.500501
+*
+*       User-Defined: net A[18] activity : 0.500501
+*
+*       User-Defined: net A[19] activity : 0.508509
+*
+*       User-Defined: net A[20] activity : 0.481481
+*
+*       User-Defined: net A[21] activity : 0.510511
+*
+*       User-Defined: net A[22] activity : 0.525526
+*
+*       User-Defined: net A[23] activity : 0.493493
+*
+*       User-Defined: net A[24] activity : 0.505506
+*
+*       User-Defined: net A[25] activity : 0.492492
+*
+*       User-Defined: net A[26] activity : 0.516517
+*
+*       User-Defined: net A[27] activity : 0.483483
+*
+*       User-Defined: net A[28] activity : 0.493493
+*
+*       User-Defined: net A[29] activity : 0.486486
+*
+*       User-Defined: net A[30] activity : 0.500501
+*
+*       User-Defined: net A[31] activity : 0.471471
+*
+*       User-Defined: net A[32] activity : 0.497497
+*
+*       User-Defined: net A[33] activity : 0.524525
+*
+*       User-Defined: net A[34] activity : 0.478478
+*
+*       User-Defined: net A[35] activity : 0.506507
+*
+*       User-Defined: net A[36] activity : 0.474474
+*
+*       User-Defined: net A[37] activity : 0.505506
+*
+*       User-Defined: net A[38] activity : 0.501502
+*
+*       User-Defined: net A[39] activity : 0.498498
+*
+*       User-Defined: net A[40] activity : 0.504505
+*
+*       User-Defined: net A[41] activity : 0.488488
+*
+*       User-Defined: net A[42] activity : 0.476476
+*
+*       User-Defined: net A[43] activity : 0.515516
+*
+*       User-Defined: net A[44] activity : 0.482482
+*
+*       User-Defined: net A[45] activity : 0.486486
+*
+*       User-Defined: net A[46] activity : 0.492492
+*
+*       User-Defined: net A[47] activity : 0.50951
+*
+*       User-Defined: net A[48] activity : 0.496496
+*
+*       User-Defined: net A[49] activity : 0.522523
+*
+*       User-Defined: net A[50] activity : 0.520521
+*
+*       User-Defined: net A[51] activity : 0.512513
+*
+*       User-Defined: net A[52] activity : 0.481481
+*
+*       User-Defined: net A[53] activity : 0.492492
+*
+*       User-Defined: net A[54] activity : 0.530531
+*
+*       User-Defined: net A[55] activity : 0.512513
+*
+*       User-Defined: net A[56] activity : 0.481481
+*
+*       User-Defined: net A[57] activity : 0.503504
+*
+*       User-Defined: net A[58] activity : 0.476476
+*
+*       User-Defined: net A[59] activity : 0.495495
+*
+*       User-Defined: net A[60] activity : 0.489489
+*
+*       User-Defined: net A[61] activity : 0.476476
+*
+*       User-Defined: net A[62] activity : 0.492492
+*
+*       User-Defined: net A[63] activity : 0.50951
+*
+*       User-Defined: net A[64] activity : 0.497497
+*
+*       User-Defined: net A[65] activity : 0.515516
+*
+*       User-Defined: net A[66] activity : 0.517518
+*
+*       User-Defined: net A[67] activity : 0.521522
+*
+*       User-Defined: net A[68] activity : 0.495495
+*
+*       User-Defined: net A[69] activity : 0.484484
+*
+*       User-Defined: net A[70] activity : 0.499499
+*
+*       User-Defined: net A[71] activity : 0.502503
+*
+*       User-Defined: net A[72] activity : 0.493493
+*
+*       User-Defined: net A[73] activity : 0.522523
+*
+*       User-Defined: net A[74] activity : 0.542543
+*
+*       User-Defined: net A[75] activity : 0.507508
+*
+*       User-Defined: net A[76] activity : 0.497497
+*
+*       User-Defined: net A[77] activity : 0.503504
+*
+*       User-Defined: net A[78] activity : 0.487487
+*
+*       User-Defined: net A[79] activity : 0.496496
+*
+*       User-Defined: net A[80] activity : 0.489489
+*
+*       User-Defined: net A[81] activity : 0.498498
+*
+*       User-Defined: net A[82] activity : 0.494494
+*
+*       User-Defined: net A[83] activity : 0.510511
+*
+*       User-Defined: net A[84] activity : 0.510511
+*
+*       User-Defined: net A[85] activity : 0.492492
+*
+*       User-Defined: net A[86] activity : 0.507508
+*
+*       User-Defined: net A[87] activity : 0.489489
+*
+*       User-Defined: net A[88] activity : 0.493493
+*
+*       User-Defined: net A[89] activity : 0.510511
+*
+*       User-Defined: net A[90] activity : 0.481481
+*
+*       User-Defined: net A[91] activity : 0.50951
+*
+*       User-Defined: net A[92] activity : 0.522523
+*
+*       User-Defined: net A[93] activity : 0.506507
+*
+*       User-Defined: net A[94] activity : 0.497497
+*
+*       User-Defined: net A[95] activity : 0.524525
+*
+*       User-Defined: net A[96] activity : 0.50951
+*
+*       User-Defined: net A[97] activity : 0.517518
+*
+*       User-Defined: net A[98] activity : 0.508509
+*
+*       User-Defined: net A[99] activity : 0.497497
+*
+*       User-Defined: net A[100] activity : 0.515516
+*
+*       User-Defined: net A[101] activity : 0.483483
+*
+*       User-Defined: net A[102] activity : 0.495495
+*
+*       User-Defined: net A[103] activity : 0.517518
+*
+*       User-Defined: net A[104] activity : 0.498498
+*
+*       User-Defined: net A[105] activity : 0.492492
+*
+*       User-Defined: net A[106] activity : 0.487487
+*
+*       User-Defined: net A[107] activity : 0.502503
+*
+*       User-Defined: net A[108] activity : 0.489489
+*
+*       User-Defined: net A[109] activity : 0.514515
+*
+*       User-Defined: net A[110] activity : 0.525526
+*
+*       User-Defined: net A[111] activity : 0.513514
+*
+*       User-Defined: net A[112] activity : 0.466466
+*
+*       User-Defined: net A[113] activity : 0.475475
+*
+*       User-Defined: net A[114] activity : 0.516517
+*
+*       User-Defined: net A[115] activity : 0.483483
+*
+*       User-Defined: net A[116] activity : 0.485485
+*
+*       User-Defined: net A[117] activity : 0.500501
+*
+*       User-Defined: net A[118] activity : 0.481481
+*
+*       User-Defined: net A[119] activity : 0.500501
+*
+*       User-Defined: net A[120] activity : 0.506507
+*
+*       User-Defined: net A[121] activity : 0.506507
+*
+*       User-Defined: net A[122] activity : 0.513514
+*
+*       User-Defined: net A[123] activity : 0.501502
+*
+*       User-Defined: net A[124] activity : 0.524525
+*
+*       User-Defined: net A[125] activity : 0.494494
+*
+*       User-Defined: net A[126] activity : 0.498498
+*
+*       User-Defined: net A[127] activity : 0.512513
+*
+*       User-Defined Activity : N.A.
+*
+*       Activity File: N.A.
+*
+*       Hierarchical Global Activity: N.A.
+*
+*       Global Activity: N.A.
+*
+*       Sequential Element Activity: N.A.
+*
+*       Primary Input Activity: 0.100000
+*
+*       Default icg ratio: N.A.
+*
+*       Global Comb ClockGate Ratio: N.A.
+*
+*	Power Units = 1mW
+*
+*	Time Units = 1e-09 secs
+*
+*       report_power
+*
+-----------------------------------------------------------------------------------------
+*
+
+
+
+Total Power
+-----------------------------------------------------------------------------------------
+Total Internal Power:        0.03051187 	   62.7847%
+Total Switching Power:       0.00872635 	   17.9563%
+Total Leakage Power:         0.00935942 	   19.2590%
+Total Power:                 0.04859764
+-----------------------------------------------------------------------------------------
+
+
+Group                           Internal   Switching     Leakage       Total  Percentage 
+                                Power      Power         Power         Power  (%)        
+-----------------------------------------------------------------------------------------
+Sequential                             0           0           0           0           0
+Macro                                  0           0           0           0           0
+IO                                     0           0           0           0           0
+Combinational                    0.03051    0.008726    0.009359      0.0486         100
+Clock (Combinational)                  0           0           0           0           0
+Clock (Sequential)                     0           0           0           0           0
+-----------------------------------------------------------------------------------------
+Total                            0.03051    0.008726    0.009359      0.0486         100
+-----------------------------------------------------------------------------------------
+
+
+Rail                  Voltage   Internal   Switching     Leakage       Total  Percentage 
+                                Power      Power         Power         Power  (%)        
+-----------------------------------------------------------------------------------------
+Default                   1.1    0.03051    0.008726    0.009359      0.0486         100
+ 
+ 
+-----------------------------------------------------------------------------------------
+*	Power Distribution Summary: 
+*              Highest Average Power:                     _604_ (OR4_X1):        0.0003223
+*              Highest Leakage Power:                     _699_ (NOR4_X1):        5.073e-05
+*                Total Cap:      3.85419e-13 F
+*                Total instances in design:   357
+*                Total instances in design with no power:     0
+*                Total instances in design with no activty:     0
+
+*                Total Fillers and Decap:     0
+-----------------------------------------------------------------------------------------
+ 
+Ended Static Power Report Generation: (cpu=0:00:00, real=0:00:00,
+mem(process/total/peak)=1119.05MB/2175.00MB/1119.05MB)
+
+**WARN: (IMPDBTCL-204):	'area' is not a recognized object/attribute for object type 'libCell'. For help use 'dbSchema libCell' to get list of all supported (settable/unsettable) objects and attributes.
+Type 'man IMPDBTCL-204' for more detail.
+**WARN: (IMPDBTCL-204):	'area' is not a recognized object/attribute for object type 'libCell'. For help use 'dbSchema libCell' to get list of all supported (settable/unsettable) objects and attributes.
+Type 'man IMPDBTCL-204' for more detail.
+**WARN: (IMPDBTCL-204):	'area' is not a recognized object/attribute for object type 'libCell'. For help use 'dbSchema libCell' to get list of all supported (settable/unsettable) objects and attributes.
+Type 'man IMPDBTCL-204' for more detail.
+**WARN: (IMPDBTCL-204):	'area' is not a recognized object/attribute for object type 'libCell'. For help use 'dbSchema libCell' to get list of all supported (settable/unsettable) objects and attributes.
+Type 'man IMPDBTCL-204' for more detail.
+**WARN: (IMPDBTCL-204):	'area' is not a recognized object/attribute for object type 'libCell'. For help use 'dbSchema libCell' to get list of all supported (settable/unsettable) objects and attributes.
+Type 'man IMPDBTCL-204' for more detail.
+**WARN: (IMPDBTCL-204):	'area' is not a recognized object/attribute for object type 'libCell'. For help use 'dbSchema libCell' to get list of all supported (settable/unsettable) objects and attributes.
+Type 'man IMPDBTCL-204' for more detail.
+**WARN: (IMPDBTCL-204):	'area' is not a recognized object/attribute for object type 'libCell'. For help use 'dbSchema libCell' to get list of all supported (settable/unsettable) objects and attributes.
+Type 'man IMPDBTCL-204' for more detail.
+**WARN: (IMPDBTCL-204):	'area' is not a recognized object/attribute for object type 'libCell'. For help use 'dbSchema libCell' to get list of all supported (settable/unsettable) objects and attributes.
+Type 'man IMPDBTCL-204' for more detail.
+**WARN: (IMPDBTCL-204):	'area' is not a recognized object/attribute for object type 'libCell'. For help use 'dbSchema libCell' to get list of all supported (settable/unsettable) objects and attributes.
+Type 'man IMPDBTCL-204' for more detail.
+**WARN: (IMPDBTCL-204):	'area' is not a recognized object/attribute for object type 'libCell'. For help use 'dbSchema libCell' to get list of all supported (settable/unsettable) objects and attributes.
+Type 'man IMPDBTCL-204' for more detail.
+**WARN: (IMPDBTCL-204):	'area' is not a recognized object/attribute for object type 'libCell'. For help use 'dbSchema libCell' to get list of all supported (settable/unsettable) objects and attributes.
+Type 'man IMPDBTCL-204' for more detail.
+**WARN: (IMPDBTCL-204):	'area' is not a recognized object/attribute for object type 'libCell'. For help use 'dbSchema libCell' to get list of all supported (settable/unsettable) objects and attributes.
+Type 'man IMPDBTCL-204' for more detail.
+**WARN: (IMPDBTCL-204):	'area' is not a recognized object/attribute for object type 'libCell'. For help use 'dbSchema libCell' to get list of all supported (settable/unsettable) objects and attributes.
+Type 'man IMPDBTCL-204' for more detail.
+**WARN: (IMPDBTCL-204):	'area' is not a recognized object/attribute for object type 'libCell'. For help use 'dbSchema libCell' to get list of all supported (settable/unsettable) objects and attributes.
+Type 'man IMPDBTCL-204' for more detail.
+**WARN: (IMPDBTCL-204):	'area' is not a recognized object/attribute for object type 'libCell'. For help use 'dbSchema libCell' to get list of all supported (settable/unsettable) objects and attributes.
+Type 'man IMPDBTCL-204' for more detail.
+**WARN: (IMPDBTCL-204):	'area' is not a recognized object/attribute for object type 'libCell'. For help use 'dbSchema libCell' to get list of all supported (settable/unsettable) objects and attributes.
+Type 'man IMPDBTCL-204' for more detail.
+**WARN: (IMPDBTCL-204):	'area' is not a recognized object/attribute for object type 'libCell'. For help use 'dbSchema libCell' to get list of all supported (settable/unsettable) objects and attributes.
+Type 'man IMPDBTCL-204' for more detail.
+**WARN: (IMPDBTCL-204):	'area' is not a recognized object/attribute for object type 'libCell'. For help use 'dbSchema libCell' to get list of all supported (settable/unsettable) objects and attributes.
+Type 'man IMPDBTCL-204' for more detail.
+**WARN: (IMPDBTCL-204):	'area' is not a recognized object/attribute for object type 'libCell'. For help use 'dbSchema libCell' to get list of all supported (settable/unsettable) objects and attributes.
+Type 'man IMPDBTCL-204' for more detail.
+**WARN: (IMPDBTCL-204):	'area' is not a recognized object/attribute for object type 'libCell'. For help use 'dbSchema libCell' to get list of all supported (settable/unsettable) objects and attributes.
+Type 'man IMPDBTCL-204' for more detail.
+**WARN: (EMS-27):	Message (IMPDBTCL-204) has exceeded the current message display limit of 20.
+To increase the message display limit, refer to the product command reference manual.
+MY_FINAL_AREA_RESULT: 0
+###############################################################
+#  Generated by:      Cadence Innovus 20.10-p004_1
+#  OS:                Linux x86_64(Host ID ubuntu)
+#  Generated on:      Wed May  6 05:38:33 2026
+#  Design:            top
+#  Command:           report_timing
+###############################################################
+Path 1: MET Late External Delay Assertion 
+Endpoint:   P[0]  (^) checked with  leading edge of 'virtual_clk'
+Beginpoint: A[12] (v) triggered by  leading edge of 'virtual_clk'
+Path Groups: {virtual_clk}
+Analysis View: typical_view
+Other End Arrival Time          0.000
+- External Delay                0.200
++ Phase Shift                  10.000
+= Required Time                 9.800
+- Arrival Time                  0.585
+= Slack Time                    9.215
+     Clock Rise Edge                      0.000
+     + Input Delay                        0.200
+     = Beginpoint Arrival Time            0.200
+     +----------------------------------------------------------------+ 
+     | Instance |     Arc      |  Cell   | Delay | Arrival | Required | 
+     |          |              |         |       |  Time   |   Time   | 
+     |----------+--------------+---------+-------+---------+----------| 
+     |          | A[12] v      |         |       |   0.200 |    9.415 | 
+     | _478_    | A1 v -> ZN ^ | NOR2_X1 | 0.054 |   0.254 |    9.469 | 
+     | _479_    | A2 ^ -> ZN v | NOR2_X1 | 0.013 |   0.267 |    9.482 | 
+     | _480_    | A2 v -> ZN ^ | NOR2_X1 | 0.032 |   0.299 |    9.514 | 
+     | _481_    | A2 ^ -> ZN v | NOR2_X1 | 0.013 |   0.312 |    9.527 | 
+     | _482_    | A2 v -> ZN ^ | NOR2_X1 | 0.032 |   0.344 |    9.558 | 
+     | _483_    | A2 ^ -> ZN v | NOR2_X1 | 0.013 |   0.357 |    9.571 | 
+     | _484_    | A2 v -> ZN ^ | NOR2_X1 | 0.032 |   0.388 |    9.603 | 
+     | _485_    | A2 ^ -> ZN v | NOR2_X1 | 0.013 |   0.401 |    9.616 | 
+     | _486_    | A2 v -> ZN ^ | NOR2_X1 | 0.032 |   0.433 |    9.648 | 
+     | _487_    | A2 ^ -> ZN v | NOR2_X1 | 0.013 |   0.446 |    9.661 | 
+     | _488_    | A2 v -> ZN ^ | NOR2_X1 | 0.032 |   0.477 |    9.692 | 
+     | _489_    | A2 ^ -> ZN v | NOR2_X1 | 0.013 |   0.490 |    9.705 | 
+     | _490_    | A2 v -> ZN ^ | NOR2_X1 | 0.032 |   0.522 |    9.737 | 
+     | _491_    | A2 ^ -> ZN v | NOR2_X1 | 0.014 |   0.536 |    9.751 | 
+     | _492_    | S v -> Z ^   | MUX2_X1 | 0.049 |   0.585 |    9.800 | 
+     |          | P[0] ^       |         | 0.000 |   0.585 |    9.800 | 
+     +----------------------------------------------------------------+ 
+
+
+*** Memory Usage v#1 (Current mem = 1299.797M, initial mem = 273.887M) ***
+*** Message Summary: 487 warning(s), 7 error(s)
+
+--- Ending "Innovus" (totcpu=0:00:19.4, real=0:00:14.0, mem=1299.8M) ---

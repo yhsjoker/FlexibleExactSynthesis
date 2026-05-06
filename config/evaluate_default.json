@@ -1,14 +1,18 @@
 {
   "command": "evaluate",
+  "dependencies": {
+    "abc_path": "/home/yhs_joker/softwares/abc/abc",
+    "python_script": "scripts/single_power_run.py"
+  },
   "run": {
     "resume_policy": "run_all",
     "case_timeout_ms": 0,
-    "threads": 0
+    "threads": 1
   },
   "evaluate": {
-    "benchmark_dir": "benchmarks",
-    "library_dir": "",
-    "verify": false,
+    "benchmark_dir": "/home/yhs_joker/datasets/benchmarks",
+    "library_dir": "results_repo/library_all_2",
+    "verify": true,
     "mode": "standard"
   }
 }

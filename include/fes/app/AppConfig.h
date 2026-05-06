@@ -22,6 +22,8 @@ struct EvaluationOptions {
     std::string abcPath;
     std::filesystem::path pythonScriptPath;
     unsigned workerCount = 0;
+    unsigned maxWorkerMemoryMb = 0;
+    unsigned maxTotalMemoryMb = 0;
 };
 
 struct AppConfig {

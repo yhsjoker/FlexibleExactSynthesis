@@ -17,7 +17,7 @@ namespace fes {
 struct LibEntry {
     std::string blifContent;              // 优化的 BLIF 代码段
     std::vector<double> idealActivities;  // 该结构预设的最优引脚翻转频率分布
-    double score;                         // 预估功耗或质量分数
+    double score;                         // 生成阶段记录的 InternalCost
 };
 
 struct PPADiff {
@@ -149,13 +149,16 @@ private:
         // string means the input is already mapped.
         std::string preMapAbcSeq;
 
-        // Score = totalSwitching
+        // Score = kSwitchWeight * totalSwitching
         //       + kOutputWeight * outputToggle
         //       + kGateWeight * max(1, gateCount)
         //       + kActivityWeight * activityDistance
+        //       + kLibraryScoreWeight * normalizedLibraryScore
+        double kSwitchWeight   = 1.0;
         double kGateWeight     = 0.10;
         double kOutputWeight   = 0.0;
         double kActivityWeight = 0.0;
+        double kLibraryScoreWeight = 0.0;
 
         // NPN matching controls. When enabled, the current cut is
         // canonicalized before library lookup; allowNegation gates whether

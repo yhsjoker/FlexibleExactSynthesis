@@ -380,6 +380,10 @@ void applyRunConfig(const JsonValue& root, GenerateOptions* opts) {
     opts->caseTimeoutMs =
         getInt(*run, "case_timeout_ms", opts->caseTimeoutMs);
     opts->workerCount = getUnsigned(*run, "threads", opts->workerCount);
+    opts->maxWorkerMemoryMb =
+        getUnsigned(*run, "max_worker_memory_mb", opts->maxWorkerMemoryMb);
+    opts->maxTotalMemoryMb =
+        getUnsigned(*run, "max_total_memory_mb", opts->maxTotalMemoryMb);
 }
 
 void applyRunConfig(const JsonValue& root, EvaluationOptions* opts) {
@@ -392,6 +396,10 @@ void applyRunConfig(const JsonValue& root, EvaluationOptions* opts) {
     opts->caseTimeoutMs =
         getInt(*run, "case_timeout_ms", opts->caseTimeoutMs);
     opts->workerCount = getUnsigned(*run, "threads", opts->workerCount);
+    opts->maxWorkerMemoryMb =
+        getUnsigned(*run, "max_worker_memory_mb", opts->maxWorkerMemoryMb);
+    opts->maxTotalMemoryMb =
+        getUnsigned(*run, "max_total_memory_mb", opts->maxTotalMemoryMb);
 }
 
 void applyToolConfig(const JsonValue& root, GenerateOptions* opts) {

@@ -370,4 +370,17 @@ fs::path resolveGenerateOutputDir(const fs::path& projectRoot,
         projectRoot, resultsRepoDir, requestedOutputDir);
 }
 
+unsigned computeEffectiveWorkerCount(unsigned requestedWorkerCount,
+                                     unsigned maxWorkerMemoryMb,
+                                     unsigned maxTotalMemoryMb) {
+    const unsigned requested = std::max(1u, requestedWorkerCount);
+    if (maxWorkerMemoryMb == 0 || maxTotalMemoryMb == 0) {
+        return requested;
+    }
+
+    const unsigned budgetedWorkers =
+        std::max(1u, maxTotalMemoryMb / maxWorkerMemoryMb);
+    return std::max(1u, std::min(requested, budgetedWorkers));
+}
+
 }  // namespace fes::app

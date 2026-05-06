@@ -77,6 +77,15 @@ std::string firstCsvField(const std::string& line) {
     return field;
 }
 
+double parseCsvDoubleOr(const std::string& text, double fallback) {
+    if (text.empty()) return fallback;
+    try {
+        return std::stod(text);
+    } catch (...) {
+        return fallback;
+    }
+}
+
 std::map<std::string, std::string> loadLegacyCsvRows(
     const std::filesystem::path& csvPath) {
     std::map<std::string, std::string> rows;
@@ -572,11 +581,20 @@ void InnovusBatchEvaluator::runBatchVerification(const std::string& benchmarksDi
         const auto caseStart = std::chrono::steady_clock::now();
         
         int inputNum = countBlifInputs(filePath);
-        auto workloads = verifier_.generateWorkloadSets(inputNum, 1, 1000);
+        const int kNumWorkloadSets = 1;
+        auto workloads =
+            verifier_.generateWorkloadSets(inputNum, kNumWorkloadSets, 1000);
 
         std::vector<double> avgProbs(inputNum, 0.0);
-        for (const auto& wl : workloads) { for (int j = 0; j < inputNum; ++j) { avgProbs[j] += wl.probs[j]; } }
-        for (int j = 0; j < inputNum; ++j) { avgProbs[j] /= 1; }
+        for (const auto& wl : workloads) {
+            for (int j = 0; j < inputNum && j < (int)wl.probs.size(); ++j) {
+                avgProbs[j] += wl.probs[j];
+            }
+        }
+        const double workloadCount = std::max<size_t>(1, workloads.size());
+        for (int j = 0; j < inputNum; ++j) {
+            avgProbs[j] /= workloadCount;
+        }
 
         auto printPPA = [](const std::string& label, const PPAResult& res) {
             if (res.valid) {
@@ -719,6 +737,8 @@ void InnovusBatchEvaluator::loadOptimizationLibrary() {
         return;
     }
 
+    hexMappingLib_.clear();
+
     std::string line;
     bool isHeader = true;
 
@@ -730,11 +750,13 @@ void InnovusBatchEvaluator::loadOptimizationLibrary() {
         }
 
         std::stringstream ss(line);
-        std::string hexFunc, probPattern, successStr;
+        std::string hexFunc, probPattern, successStr, gatesStr, internalCostStr;
         
         std::getline(ss, hexFunc, ',');
         std::getline(ss, probPattern, ',');
         std::getline(ss, successStr, ',');
+        std::getline(ss, gatesStr, ',');
+        std::getline(ss, internalCostStr, ',');
 
         if (successStr == "true") {
             std::string fullFuncName = hexFunc + probPattern;
@@ -746,7 +768,8 @@ void InnovusBatchEvaluator::loadOptimizationLibrary() {
 
                 LibEntry entry;
                 entry.blifContent = content;
-                entry.score = 0.0; 
+                entry.score = parseCsvDoubleOr(
+                    internalCostStr, std::numeric_limits<double>::infinity());
 
                 std::vector<double> ideals;
                 std::stringstream pSs(probPattern);
@@ -1043,13 +1066,20 @@ std::string fes::InnovusBatchEvaluator::rewriteBlifWithLibrary(
 {
     RewriteConfig cfg;
     cfg.preMapAbcSeq         = "strash; if -K " + abcLutK() + " -a";
-    cfg.kGateWeight          = isAggressive ? 0.002 : 0.005;
-    cfg.kOutputWeight        = 0.0;
-    cfg.kActivityWeight      = 0.0;
+    cfg.kSwitchWeight        = isAggressive ? 0.25 : 0.35;
+    cfg.kGateWeight          = isAggressive ? 0.015 : 0.030;
+    cfg.kOutputWeight        = isAggressive ? 0.05 : 0.10;
+    cfg.kActivityWeight      = isAggressive ? 0.02 : 0.04;
+    cfg.kLibraryScoreWeight  = isAggressive ? 0.03 : 0.06;
     cfg.enableNpn           = true;
     cfg.allowNegation       = true;
-    cfg.useImprovementFilter = false;
-    cfg.cleanupAbcSeq        = "sweep; topo";
+    cfg.useImprovementFilter = !isAggressive;
+    cfg.kImproveMargin       = 0.005;
+    cfg.cleanupAbcSeq =
+        isAggressive
+            ? ("strash; dc2; if -K " + abcLutK() + " -a; sweep; topo")
+            : ("strash; dc2; balance; if -K " + abcLutK() +
+               " -a; sweep; topo");
     cfg.tag                  = isAggressive ? "PONO_agg" : "PONO_cons";
     return rewriteBlifUnified(originalBlifPath, actualProbs,
                               hexMappingLib_, cfg);
@@ -1233,15 +1263,18 @@ std::string fes::InnovusBatchEvaluator::rewriteBlifUnified(
             return prelude + processed + epilogue;
         };
 
-    // Unified score = totalSwitching + kOutputWeight * outputToggle
+    // Unified score = kSwitchWeight * totalSwitching
+    //               + kOutputWeight * outputToggle
     //               + kGateWeight * max(1, gateCount)
     //               + kActivityWeight * activityDistance
+    //               + kLibraryScoreWeight * normalizedLibraryScore
     //               + totalNegationCount * kInverterPowerPenalty.
     // Zeroing the output/activity weights recovers the legacy PONO engine's
     // pure-switching formula.
     auto scoreCandidate =
         [&](const LibEntry& cand,
             const std::vector<double>& inProbs,
+            double normalizedLibScore,
             int negationCount)
             -> std::pair<FragmentPowerInfo, double> {
             FragmentPowerInfo fpi =
@@ -1256,10 +1289,11 @@ std::string fes::InnovusBatchEvaluator::rewriteBlifUnified(
                 }
                 activityDist /= static_cast<double>(activityN);
             }
-            double score = fpi.totalSwitching
+            double score = cfg.kSwitchWeight * fpi.totalSwitching
                          + cfg.kOutputWeight * fpi.outputToggle
                          + cfg.kGateWeight * std::max(1, fpi.gateCount)
                          + cfg.kActivityWeight * activityDist
+                         + cfg.kLibraryScoreWeight * normalizedLibScore
                          + static_cast<double>(negationCount) *
                                kInverterPowerPenalty;
             return {fpi, score};
@@ -1388,6 +1422,16 @@ std::string fes::InnovusBatchEvaluator::rewriteBlifUnified(
             continue;
         }
         const auto& candidates = libIt->second;
+        double finiteLibScoreMin = std::numeric_limits<double>::infinity();
+        double finiteLibScoreMax = -std::numeric_limits<double>::infinity();
+        for (const auto& cand : candidates) {
+            if (!std::isfinite(cand.score)) continue;
+            finiteLibScoreMin = std::min(finiteLibScoreMin, cand.score);
+            finiteLibScoreMax = std::max(finiteLibScoreMax, cand.score);
+        }
+        const bool haveFiniteLibRange =
+            std::isfinite(finiteLibScoreMin) &&
+            std::isfinite(finiteLibScoreMax);
 
         if (cfg.enableNpn &&
             recipeNegationCount > 0 &&
@@ -1399,7 +1443,7 @@ std::string fes::InnovusBatchEvaluator::rewriteBlifUnified(
 
         // Score the incumbent LUT for the optional improvement filter.
         const double origToggle = 2.0 * outProb * (1.0 - outProb);
-        const double origScore = origToggle
+        const double origScore = cfg.kSwitchWeight * origToggle
                                + cfg.kOutputWeight * origToggle
                                + cfg.kGateWeight * 1.0;
 
@@ -1416,6 +1460,14 @@ std::string fes::InnovusBatchEvaluator::rewriteBlifUnified(
 
         for (int ci = 0; ci < (int)candidates.size(); ++ci) {
             const auto& cand = candidates[ci];
+            double normalizedLibScore = 0.0;
+            if (haveFiniteLibRange &&
+                std::isfinite(cand.score) &&
+                finiteLibScoreMax > finiteLibScoreMin + 1e-12) {
+                normalizedLibScore =
+                    (cand.score - finiteLibScoreMin) /
+                    (finiteLibScoreMax - finiteLibScoreMin);
+            }
 
             std::vector<std::string> libInputs, libOutputs;
             int fragmentGates = 0;
@@ -1427,7 +1479,8 @@ std::string fes::InnovusBatchEvaluator::rewriteBlifUnified(
             if (fragmentGates <= 0) continue;
 
             auto [fpi, score] = scoreCandidate(
-                cand, matchedInputProbs, recipeNegationCount);
+                cand, matchedInputProbs, normalizedLibScore,
+                recipeNegationCount);
 
             if (cfg.useImprovementFilter &&
                 !(score + 1e-12 < origScore * (1.0 - cfg.kImproveMargin))) {
@@ -1751,11 +1804,13 @@ void fes::InnovusBatchEvaluator::loadABCOptimizationLibrary() {
         }
 
         std::stringstream ss(line);
-        std::string hexFunc, probPattern, successStr;
+        std::string hexFunc, probPattern, successStr, gatesStr, internalCostStr;
 
         std::getline(ss, hexFunc, ',');
         std::getline(ss, probPattern, ',');
         std::getline(ss, successStr, ',');
+        std::getline(ss, gatesStr, ',');
+        std::getline(ss, internalCostStr, ',');
 
         if (successStr == "true") {
             std::string fullFuncName = hexFunc + probPattern;
@@ -1768,7 +1823,8 @@ void fes::InnovusBatchEvaluator::loadABCOptimizationLibrary() {
 
                 LibEntry entry;
                 entry.blifContent = content;
-                entry.score = 0.0;
+                entry.score = parseCsvDoubleOr(
+                    internalCostStr, std::numeric_limits<double>::infinity());
 
                 std::vector<double> ideals;
                 std::stringstream pSs(probPattern);
@@ -2024,6 +2080,7 @@ std::string fes::InnovusBatchEvaluator::rewriteMappedBlifWithGivenLibrarySimple(
     cfg.kGateWeight          = 0.10;
     cfg.kOutputWeight        = 0.35;
     cfg.kActivityWeight      = 0.08;
+    cfg.kLibraryScoreWeight  = 0.08;
     cfg.enableNpn           = false;
     cfg.allowNegation       = false;
     cfg.useImprovementFilter = true;

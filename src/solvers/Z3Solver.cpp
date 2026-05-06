@@ -128,13 +128,10 @@ namespace fes {
         } else if (res == z3::unsat) {
             result = SolveStatus::UNSAT;
         } else {
-            // 当超时 (timeout) 触发返回 unknown 时，OMT 通常已经找到了一个局部最优的 SAT 解
-            try {
-                model_ = std::make_unique<z3::model>(optimizer_.get_model());
-                result = SolveStatus::SAT; 
-            } catch (...) {
-                result = SolveStatus::UNKNOWN;
-            }
+            // `optimize.check()` may return unknown on timeout/interruption.
+            // Do not decode or verify a model from that state as a valid
+            // synthesis result; partial optimize models are not reliable here.
+            result = SolveStatus::UNKNOWN;
         }
 
         optimizer_.pop();

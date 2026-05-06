@@ -94,8 +94,12 @@ void verifyConfigParsingAndCliPrecedence() {
         "{\n"
         "  \"command\": \"generate\",\n"
         "  \"tools\": {\"abc_path\": \"/tmp/abc_from_tools\"},\n"
-        "  \"dependencies\": {\"abc_path\": \"/tmp/abc_from_dependencies\"},\n"
-        "  \"run\": {\"resume_policy\": \"resume\", \"case_timeout_ms\": 42},\n"
+        "  \"dependencies\": {\n"
+        "    \"abc_path\": \"/tmp/abc_from_dependencies\"\n"
+        "  },\n"
+        "  \"run\": {\"resume_policy\": \"resume\", \"case_timeout_ms\": 42,\n"
+        "           \"threads\": 8, \"max_worker_memory_mb\": 1024,\n"
+        "           \"max_total_memory_mb\": 3072},\n"
         "  \"generate\": {\n"
         "    \"k\": 4,\n"
         "    \"num_functions\": 7,\n"
@@ -114,6 +118,11 @@ void verifyConfigParsingAndCliPrecedence() {
             "Config resume policy was not parsed.");
     require(configOnly.caseTimeoutMs == 42,
             "Config case timeout was not parsed.");
+    require(configOnly.workerCount == 8,
+            "Config run.threads was not parsed.");
+    require(configOnly.maxWorkerMemoryMb == 1024 &&
+                configOnly.maxTotalMemoryMb == 3072,
+            "Config memory budget fields were not parsed.");
     require(configOnly.satTimeoutMs == 123 && configOnly.optTimeoutMs == 456,
             "Grouped generation timeout settings were not parsed.");
     require(configOnly.abcPath == "/tmp/abc_from_dependencies",
@@ -123,8 +132,7 @@ void verifyConfigParsingAndCliPrecedence() {
 
     const app::GenerateOptions overridden =
         app::parseGenerateOptions(
-            {"--config", path.string(), "--num", "2",
-             "--activity-mode", "uniform"},
+            {"--config", path.string(), "--num", "2", "--activity-mode", "uniform"},
             6);
     require(overridden.numFunctions == 2,
             "CLI --num should override config num_functions.");
@@ -158,7 +166,9 @@ void verifyEvaluationConfigParsing() {
         "{\n"
         "  \"command\": \"benchmark\",\n"
         "  \"dependencies\": {\"abc_path\": \"/tmp/abc_for_eval\"},\n"
-        "  \"run\": {\"resume_policy\": \"run_all\"},\n"
+        "  \"run\": {\"resume_policy\": \"run_all\", \"threads\": 4,\n"
+        "           \"max_worker_memory_mb\": 2048,\n"
+        "           \"max_total_memory_mb\": 4096},\n"
         "  \"benchmark\": {\n"
         "    \"benchmark_dir\": \"/tmp/benches\",\n"
         "    \"library_dir\": \"results_repo/lib\",\n"
@@ -179,7 +189,30 @@ void verifyEvaluationConfigParsing() {
             "Evaluation dependencies.abc_path was not parsed.");
     require(opts.caseTimeoutMs == 700,
             "Evaluation grouped case timeout was not parsed.");
+    require(opts.workerCount == 4,
+            "Evaluation run.threads was not parsed.");
+    require(opts.maxWorkerMemoryMb == 2048 &&
+                opts.maxTotalMemoryMb == 4096,
+            "Evaluation memory budget fields were not parsed.");
     fs::remove(path);
+}
+
+void verifyMemoryBudgetWorkerReduction() {
+    require(app::computeEffectiveWorkerCount(8, 1024, 3072) == 3,
+            "Memory budget should reduce worker count by total/per-worker.");
+    require(app::computeEffectiveWorkerCount(8, 0, 3072) == 8,
+            "Missing per-worker budget should preserve requested workers.");
+    require(app::computeEffectiveWorkerCount(8, 1024, 0) == 8,
+            "Missing total budget should preserve requested workers.");
+    require(app::computeEffectiveWorkerCount(8, 4096, 1024) == 1,
+            "Budget below one worker estimate should still allow one worker.");
+    require(app::computeEffectiveWorkerCount(0, 1024, 4096) == 1,
+            "Requested zero workers should normalize to one in the helper.");
+}
+
+void verifyRemovedSynthLibOption() {
+    requireThrows({"--synth-lib", "resources/synth_2input.csv"},
+                  "removed --synth-lib option");
 }
 
 void verifyOutputPathResolution() {
@@ -224,6 +257,8 @@ int main() {
         fes::verifyConfigParsingAndCliPrecedence();
         fes::verifyInvalidConfigDetection();
         fes::verifyEvaluationConfigParsing();
+        fes::verifyMemoryBudgetWorkerReduction();
+        fes::verifyRemovedSynthLibOption();
         fes::verifyOutputPathResolution();
         std::cout << "All generate CLI tests passed." << std::endl;
         return 0;

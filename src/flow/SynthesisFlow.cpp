@@ -351,7 +351,7 @@ std::vector<StandardCell> maybeLoadStandardCells(const std::string& libPath,
 
     fs::path csvPath = fs::path(outputDir);
     if (csvPath.empty()) {
-        csvPath = fs::current_path();
+        csvPath = fs::temp_directory_path() / "pono_cell_cache";
     }
     csvPath /= "parsed_cells_k" + std::to_string(lutInputs) + ".csv";
 
@@ -1073,11 +1073,12 @@ AbcStats SynthesisFlow::evaluateBlif(const std::string& blifFile) {
 }
 
 AbcStats SynthesisFlow::runAbcBaseline(const std::string& hexFunc, int numInputs) {
-    fs::create_directories("tmp_eval");
+    const fs::path scratchDir = fs::temp_directory_path() / "pono_tmp_eval";
+    fs::create_directories(scratchDir);
 
     const std::string threadTag =
         std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id()));
-    const fs::path mappedPath = fs::path("tmp_eval") / ("baseline_" + threadTag + ".blif");
+    const fs::path mappedPath = scratchDir / ("baseline_" + threadTag + ".blif");
     runAbcToGenerateBaseline(hexFunc, numInputs, mappedPath.string());
     return evaluateBlif(mappedPath.string());
 }

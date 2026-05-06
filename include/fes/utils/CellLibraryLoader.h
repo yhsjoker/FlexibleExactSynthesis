@@ -17,7 +17,8 @@ public:
     static std::vector<StandardCell> loadOrGenerate(
         const std::string& csvPath,
         const std::string& libPath,
-        int maxInputs);
+        int maxInputs,
+        const std::string& parserScriptPath = "");
 };
 
 }  // namespace fes

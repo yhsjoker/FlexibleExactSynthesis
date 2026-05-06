@@ -28,6 +28,8 @@ struct GenerateOptions {
     std::filesystem::path pythonScriptPath;
     std::filesystem::path standardCellCsvPath;
     unsigned workerCount = 0;
+    unsigned maxWorkerMemoryMb = 0;
+    unsigned maxTotalMemoryMb = 0;
     bool verify = false;
     bool help = false;
 };
@@ -40,5 +42,9 @@ std::filesystem::path resolveGenerateOutputDir(
     const std::filesystem::path& resultsRepoDir,
     const std::filesystem::path& requestedOutputDir,
     const std::filesystem::path& defaultOutputDir);
+
+unsigned computeEffectiveWorkerCount(unsigned requestedWorkerCount,
+                                     unsigned maxWorkerMemoryMb,
+                                     unsigned maxTotalMemoryMb);
 
 }  // namespace fes::app

@@ -12,6 +12,10 @@
 #include <utility>
 #include <vector>
 
+#ifndef FES_PROJECT_ROOT
+#define FES_PROJECT_ROOT "."
+#endif
+
 namespace fes {
 
 namespace {
@@ -84,12 +88,30 @@ int countExpressionInputs(const std::string& expression) {
     return static_cast<int>(identifiers.size());
 }
 
+std::filesystem::path compileTimeProjectRoot() {
+    return std::filesystem::weakly_canonical(
+        std::filesystem::path(FES_PROJECT_ROOT));
+}
+
+std::filesystem::path resolveParserScriptPath(
+    const std::string& parserScriptPath) {
+    namespace fs = std::filesystem;
+    fs::path scriptPath = parserScriptPath.empty()
+                              ? fs::path("scripts") / "parse_liberty.py"
+                              : fs::path(parserScriptPath);
+    if (scriptPath.is_absolute()) {
+        return scriptPath.lexically_normal();
+    }
+    return (compileTimeProjectRoot() / scriptPath).lexically_normal();
+}
+
 }  // namespace
 
 std::vector<StandardCell> CellLibraryLoader::loadOrGenerate(
     const std::string& csvPath,
     const std::string& libPath,
-    int maxInputs) {
+    int maxInputs,
+    const std::string& parserScriptPath) {
     namespace fs = std::filesystem;
 
     const fs::path csvFile(csvPath);
@@ -103,8 +125,7 @@ std::vector<StandardCell> CellLibraryLoader::loadOrGenerate(
             return cells;
         }
 
-        const fs::path scriptPath =
-            fs::current_path() / "scripts" / "parse_liberty.py";
+        const fs::path scriptPath = resolveParserScriptPath(parserScriptPath);
         if (!fs::exists(scriptPath)) {
             std::cerr << "[CellLibraryLoader] Parser script not found: "
                       << scriptPath << "\n";
@@ -167,7 +188,7 @@ std::vector<StandardCell> CellLibraryLoader::loadOrGenerate(
 
             const int inputCount = countExpressionInputs(cell.expression);
             const bool withinLimit =
-                maxInputs <= 0 || (inputCount > 0 && inputCount <= maxInputs);
+                maxInputs <= 0 || inputCount <= maxInputs;
 
             if (!cell.name.empty() && !cell.expression.empty() && withinLimit) {
                 cells.push_back(std::move(cell));

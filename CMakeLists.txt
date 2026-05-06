@@ -149,6 +149,12 @@ add_executable(test_generate_cli
 )
 add_test(NAME test_generate_cli COMMAND test_generate_cli)
 
+add_executable(test_synthesis_library_loader
+    src/tests/test_synthesis_library_loader.cpp
+    src/utils/SynthesisLibraryLoader.cpp
+)
+add_test(NAME test_synthesis_library_loader COMMAND test_synthesis_library_loader)
+
 add_executable(test_run_manifest
     src/tests/test_run_manifest.cpp
     src/flow/RunManifest.cpp

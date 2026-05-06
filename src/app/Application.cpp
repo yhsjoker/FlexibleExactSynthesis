@@ -7,6 +7,7 @@
 #include "fes/flow/SynthesisFlow.h"
 #include "fes/utils/CellLibraryLoader.h"
 #include "fes/utils/InnovusBatchEvaluator.h"
+#include "fes/utils/SynthesisLibraryLoader.h"
 
 #include <algorithm>
 #include <chrono>
@@ -17,6 +18,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <thread>
 #include <vector>
 
@@ -47,34 +49,34 @@ struct AppContext {
     unsigned workerCount = 1;
 };
 
-std::vector<GateType> createLibrary() {
-    std::vector<GateType> lib;
+std::string joinStandardCellNames(const std::vector<StandardCell>& cells) {
+    std::ostringstream out;
+    for (std::size_t i = 0; i < cells.size(); ++i) {
+        if (i > 0) {
+            out << ", ";
+        }
+        out << cells[i].name;
+    }
+    return out.str();
+}
 
-    lib.emplace_back("CONST0", 0, 0x0000, 5.32, 0.266, 0.0);
-    lib.emplace_back("CONST1", 0, 0xFFFF, 5.32, 0.266, 0.0);
+std::string joinGateTypeNames(const std::vector<GateType>& gates) {
+    std::ostringstream out;
+    for (std::size_t i = 0; i < gates.size(); ++i) {
+        if (i > 0) {
+            out << ", ";
+        }
+        out << gates[i].name;
+    }
+    return out.str();
+}
 
-    lib.emplace_back("INV", 1, 0x1, 14.35, 0.532, 10.0);
-    lib.emplace_back("BUF", 1, 0x2, 21.44, 0.798, 20.0);
-
-    lib.emplace_back("NAND2", 2, 0x7, 17.39, 0.798, 15.0);
-    lib.emplace_back("NAND3", 3, 0x7F, 18.10, 1.064, 22.0);
-    lib.emplace_back("NAND4", 4, 0x7FFF, 18.13, 1.330, 30.0);
-
-    lib.emplace_back("NOR2", 2, 0x1, 21.20, 0.798, 18.0);
-    lib.emplace_back("NOR3", 3, 0x01, 26.83, 1.064, 26.0);
-    lib.emplace_back("NOR4", 4, 0x0001, 32.60, 1.330, 35.0);
-
-    lib.emplace_back("AND2", 2, 0x8, 25.07, 1.064, 25.0);
-    lib.emplace_back("OR2", 2, 0xE, 22.69, 1.064, 25.0);
-    lib.emplace_back("XOR2", 2, 0x6, 36.16, 1.596, 40.0);
-    lib.emplace_back("XNOR2", 2, 0x9, 36.44, 1.596, 40.0);
-
-    lib.emplace_back("AOI21", 3, 0x07, 27.86, 1.064, 20.0);
-    lib.emplace_back("AOI22", 4, 0x0777, 32.61, 1.330, 25.0);
-    lib.emplace_back("OAI21", 3, 0x1F, 22.62, 1.064, 20.0);
-    lib.emplace_back("OAI22", 4, 0x111F, 34.03, 1.330, 25.0);
-
-    return lib;
+int maxGateInputs(const std::vector<GateType>& gates) {
+    int maxInputs = 0;
+    for (const auto& gate : gates) {
+        maxInputs = std::max(maxInputs, gate.numInputs);
+    }
+    return maxInputs;
 }
 
 std::string getCurrentTimestamp() {
@@ -242,7 +244,9 @@ void printGenerateHelp(const AppContext& ctx) {
         << "  -h, --help          Show this message\n\n"
         << "Notes:\n"
         << "  ABC is configured with dependencies.abc_path in JSON or ABC_PATH.\n"
-        << "  Standard cells are loaded from "
+        << "  The exact-synthesis gate library is derived directly from\n"
+        << "  dependencies.standard_cell_csv.\n"
+        << "  Standard-cell metadata and synthesis primitives are both loaded from\n"
         << ctx.standardCellCsvPath.string()
         << " / " << ctx.libertyPath.string() << ".\n"
         << "  Worker count defaults to hardware concurrency: "
@@ -321,6 +325,36 @@ void applyEvaluationToolOverrides(AppContext& ctx,
 int runGenerateCommand(const AppContext& ctx, GenerateOptions opts) {
     AppContext runCtx = ctx;
     applyGenerateToolOverrides(runCtx, opts);
+    const unsigned requestedWorkers = std::max(1u, runCtx.workerCount);
+    const unsigned effectiveWorkers = computeEffectiveWorkerCount(
+        requestedWorkers, opts.maxWorkerMemoryMb, opts.maxTotalMemoryMb);
+    runCtx.workerCount = effectiveWorkers;
+
+    opts.outputDir = resolveGenerateOutputDir(
+        runCtx.projectRoot,
+        runCtx.resultsRepoDir,
+        opts.outputDir,
+        defaultGenerateOutputDir(runCtx, opts));
+
+    std::cout << "[Generate] Project root: " << fs::absolute(runCtx.projectRoot) << "\n";
+    std::cout << "[Generate] Resources: " << fs::absolute(runCtx.resourcesDir) << "\n";
+    std::cout << "[Generate] ABC: " << fs::absolute(fs::path(runCtx.abcPath)) << "\n";
+    std::cout << "[Generate] tmp_eval: "
+              << fs::absolute(opts.outputDir / "tmp_eval") << "\n";
+    std::cout << "[Generate] Output: " << fs::absolute(opts.outputDir) << "\n";
+    std::cout << "[Generate] Activity mode: " << opts.activityModeName << "\n";
+    std::cout << "[Generate] Resume policy: "
+              << resumePolicyToString(opts.resumePolicy) << "\n";
+    std::cout << "[Generate] Timeouts(ms): sat=" << opts.satTimeoutMs
+              << ", optimization=" << opts.optTimeoutMs
+              << ", case=" << opts.caseTimeoutMs << "\n";
+    std::cout << "[Generate] Worker threads: requested=" << requestedWorkers
+              << ", effective=" << effectiveWorkers << "\n";
+    std::cout << "[Generate] Memory budget(MB): max_worker="
+              << opts.maxWorkerMemoryMb
+              << ", max_total=" << opts.maxTotalMemoryMb
+              << " (best-effort worker-count guard)\n";
+    std::cout << std::flush;
 
     requireConfiguredFile(
         fs::path(runCtx.abcPath),
@@ -330,36 +364,36 @@ int runGenerateCommand(const AppContext& ctx, GenerateOptions opts) {
     requireFile(runCtx.genlibPath, "ABC genlib");
     requireFile(runCtx.libertyPath, "Standard-cell Liberty file");
 
-    opts.outputDir = resolveGenerateOutputDir(
-        runCtx.projectRoot,
-        runCtx.resultsRepoDir,
-        opts.outputDir,
-        defaultGenerateOutputDir(runCtx, opts));
     fs::create_directories(opts.outputDir);
 
     const auto standardCells = CellLibraryLoader::loadOrGenerate(
         runCtx.standardCellCsvPath.string(),
         runCtx.libertyPath.string(),
-        opts.k);
+        opts.k,
+        (runCtx.projectRoot / "scripts" / "parse_liberty.py").string());
     if (standardCells.empty()) {
         throw std::runtime_error(
             "No standard cells available for K=" + std::to_string(opts.k));
     }
 
-    std::cout << "[Generate] Resources: " << fs::absolute(runCtx.resourcesDir) << "\n";
-    std::cout << "[Generate] ABC: " << fs::absolute(fs::path(runCtx.abcPath)) << "\n";
-    std::cout << "[Generate] tmp_eval: " << fs::absolute(runCtx.tmpEvalDir) << "\n";
-    std::cout << "[Generate] Output: " << fs::absolute(opts.outputDir) << "\n";
-    std::cout << "[Generate] Activity mode: " << opts.activityModeName << "\n";
-    std::cout << "[Generate] Resume policy: "
-              << resumePolicyToString(opts.resumePolicy) << "\n";
-    std::cout << "[Generate] Timeouts(ms): sat=" << opts.satTimeoutMs
-              << ", optimization=" << opts.optTimeoutMs
-              << ", case=" << opts.caseTimeoutMs << "\n";
-    std::cout << "[Generate] Worker threads: " << runCtx.workerCount
-              << " (used internally by SynthesisFlow)\n";
-    std::cout << "[Generate] Loaded standard cells: " << standardCells.size()
-              << " for K<=" << opts.k << "\n";
+    const auto synthesisLibrary =
+        SynthesisLibraryLoader::deriveFromStandardCells(standardCells);
+    std::cout << "[Generate] standard_cell_csv: "
+              << fs::absolute(runCtx.standardCellCsvPath) << "\n";
+    std::cout << "[Generate] Loaded standard cells: "
+              << standardCells.size() << " ["
+              << joinStandardCellNames(standardCells) << "]\n";
+    std::cout << "[Generate] Derived synthesis gate library: "
+              << synthesisLibrary.size() << " ["
+              << joinGateTypeNames(synthesisLibrary) << "]\n";
+    std::cout << "[Generate] Derived max synthesis fanin: "
+              << maxGateInputs(synthesisLibrary) << "\n";
+    std::cout << "[Generate] Encoder type choices per synthesized gate: "
+              << synthesisLibrary.size()
+              << ", max candidate gate inputs: "
+              << maxGateInputs(synthesisLibrary) << "\n";
+    std::cout << "[Generate] Note: exact-synthesis gates are derived directly "
+                 "from standard_cell_csv.\n";
 
     LibraryGenerationConfig cfg;
     cfg.lutInputs = opts.k;
@@ -373,7 +407,7 @@ int runGenerateCommand(const AppContext& ctx, GenerateOptions opts) {
     cfg.satTimeoutMs = opts.satTimeoutMs;
     cfg.optTimeoutMs = opts.optTimeoutMs;
     cfg.caseTimeoutMs = opts.caseTimeoutMs;
-    cfg.workerCount = opts.workerCount;
+    cfg.workerCount = effectiveWorkers;
 
     if (opts.mode == "exhaustive") {
         cfg.mode = LibraryGenerationMode::kExhaustiveNpn;
@@ -390,7 +424,7 @@ int runGenerateCommand(const AppContext& ctx, GenerateOptions opts) {
     }
 
     SynthesisFlow flow(
-        createLibrary(),
+        synthesisLibrary,
         runCtx.abcPath,
         runCtx.genlibPath.string(),
         runCtx.pythonScriptPath.string());
@@ -411,6 +445,10 @@ int runGenerateCommand(const AppContext& ctx, GenerateOptions opts) {
 int runOptimizeCommand(const AppContext& ctx, EvaluationOptions opts) {
     AppContext runCtx = ctx;
     applyEvaluationToolOverrides(runCtx, opts);
+    const unsigned requestedWorkers = std::max(1u, runCtx.workerCount);
+    const unsigned effectiveWorkers = computeEffectiveWorkerCount(
+        requestedWorkers, opts.maxWorkerMemoryMb, opts.maxTotalMemoryMb);
+    runCtx.workerCount = effectiveWorkers;
 
     requireConfiguredFile(
         fs::path(runCtx.abcPath),
@@ -440,12 +478,20 @@ int runOptimizeCommand(const AppContext& ctx, EvaluationOptions opts) {
     requireDirectory(opts.libraryDir / "detailed_infos", "Library detailed_infos");
 
     std::cout << "[Optimize] Resources: " << fs::absolute(runCtx.resourcesDir) << "\n";
+    std::cout << "[Optimize] Project root: " << fs::absolute(runCtx.projectRoot) << "\n";
     std::cout << "[Optimize] ABC: " << fs::absolute(fs::path(runCtx.abcPath)) << "\n";
     std::cout << "[Optimize] tmp_eval: "
               << fs::absolute(opts.libraryDir / "tmp_eval") << "\n";
     std::cout << "[Optimize] Resume policy: "
               << resumePolicyToString(opts.resumePolicy) << "\n";
     std::cout << "[Optimize] Case timeout(ms): " << opts.caseTimeoutMs << "\n";
+    std::cout << "[Optimize] Worker threads: requested=" << requestedWorkers
+              << ", effective=" << effectiveWorkers
+              << " (diagnostic; evaluator case loop is not thread-parallel)\n";
+    std::cout << "[Optimize] Memory budget(MB): max_worker="
+              << opts.maxWorkerMemoryMb
+              << ", max_total=" << opts.maxTotalMemoryMb
+              << " (best-effort diagnostic for evaluation)\n";
     std::cout << "[Optimize] Tournament mode: aggressive vs conservative PONO rewrite\n";
     std::cout << "[Optimize] Library: " << fs::absolute(opts.libraryDir) << "\n";
     std::cout << "[Optimize] Benchmarks: " << fs::absolute(opts.benchmarkDir) << "\n";

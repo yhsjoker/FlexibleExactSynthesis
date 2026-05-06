@@ -13,13 +13,14 @@ examples live in `config/examples/*.jsonc` and are for humans, not for
 - Relative `generate.output_dir` values and CLI `--out` values are resolved
   under `<project_root>/results_repo`.
 - Paths are not resolved relative to the current working directory, build
-  directory, or config file directory.
+  directory, or config file directory. This is intentional because common use is
+  `cd build && ./fes_app generate --config ../config/build_library.json`.
 
 ## Runnable Config Set
 
 | File | Workflow | Purpose |
 | --- | --- | --- |
-| `build_library.json` | `generate` | Primary full-library build: all K=4 exhaustive NPN-canonical representatives, cartesian activity, verification enabled. |
+| `build_library.json` | `generate` | Primary full-library build: all K=4 exhaustive NPN-canonical representatives, cartesian activity from the shipped `standard_cells.csv`, verification disabled by default. |
 | `generate_k4_uniform.json` | `generate` | Smoke/example config using one exhaustive K=4 function and the legacy uniform activity sweep. |
 | `generate_k4_cartesian.json` | `generate` | Smoke/example config using one exhaustive K=4 function and cartesian activity levels. |
 | `generate_k4_explicit.json` | `generate` | Smoke/example config using one exhaustive K=4 function and two explicit activity vectors. |
@@ -53,10 +54,12 @@ Current program semantics for that config:
 - For `k: 4`, the raw truth-table universe has `2^(2^4) = 65536` functions
   before NPN canonicalization. The generated function set is the NPN-canonical
   representative set, not 65536 separate raw functions.
-- With cartesian activity levels `[0.2, 0.4, 0.6, 0.8]` and `k: 4`, each
-  selected representative gets `4^4 = 256` activity patterns.
+- With cartesian activity levels `[0.3, 0.7]` and `k: 4`, each selected
+  representative gets `2^4 = 16` activity patterns.
 - The output directory resolves to
   `<project_root>/results_repo/library_k4_npn_cartesian`.
+- The shipped config currently requests one worker with a best-effort memory
+  budget of `max_worker_memory_mb: 1024` and `max_total_memory_mb: 4096`.
 
 ## Common Parameters
 
@@ -67,10 +70,12 @@ Current program semantics for that config:
 | `dependencies.python_script` | generation/evaluation | Physical-power helper script. Relative paths are project-root-relative. |
 | `dependencies.genlib_path` | generation | ABC genlib path. Relative paths are project-root-relative. |
 | `dependencies.liberty_path` | generation | Standard-cell Liberty path. Relative paths are project-root-relative. |
-| `dependencies.standard_cell_csv` | generation | Cached parsed standard-cell CSV path. |
+| `dependencies.standard_cell_csv` | generation | Standard-cell CSV used both for cell metadata and for deriving the exact-synthesis gate library. Reducing this file reduces synthesis gate choices and max fanin. |
 | `run.resume_policy` | generate/evaluate/benchmark | `run_all`, `skip_completed`, `resume`, `rerun_failed`, or `rerun_timeout`. |
 | `run.case_timeout_ms` | generate/evaluate/benchmark | Shared case timeout; `0` disables timeout marking. Command-specific timeout keys can override it. |
 | `run.threads` | generate/evaluate/benchmark | Parsed for all config-driven flows. `0` means auto/default. Generation uses this for `SynthesisFlow`; physical evaluation currently parses it for consistency but does not parallelize evaluator cases through this field. |
+| `run.max_worker_memory_mb` | generate/evaluate/benchmark | Estimated memory budget per worker/case pipeline. `0` disables memory-budget worker reduction. |
+| `run.max_total_memory_mb` | generate/evaluate/benchmark | Estimated total memory budget for the run. `0` disables memory-budget worker reduction. |
 | `generate.k` | generate | LUT input count. Must fit the compiled LUT range. |
 | `generate.num_functions` | generate | Maximum generated/selected functions; `0` means no positive count limit in the generation path. |
 | `generate.function_source` | generate | `exhaustive` or `benchmark`. |
@@ -93,3 +98,26 @@ Current program semantics for that config:
 Legacy `tools.*` dependency keys and flat generation timeout keys
 `sat_timeout_ms`, `opt_timeout_ms`, and `case_timeout_ms` are still accepted
 for compatibility. Prefer the grouped keys shown here for new configs.
+
+## Memory Budget Behavior
+
+Memory controls are a best-effort scheduling guard, not strict per-thread
+memory enforcement. Threads share process memory, and external tools may use
+memory outside the C++ worker estimate.
+
+For generation, the app computes:
+
+```text
+requested_workers = run.threads, or hardware concurrency when run.threads is 0
+if max_worker_memory_mb > 0 and max_total_memory_mb > 0:
+    effective_workers = min(requested_workers,
+                            floor(max_total_memory_mb / max_worker_memory_mb))
+    effective_workers is always at least 1
+else:
+    effective_workers = requested_workers
+```
+
+The effective value is passed to `SynthesisFlow`. For evaluate/benchmark, the
+fields are parsed and printed for consistency, but the current evaluator case
+loop is not thread-parallel through `run.threads`, so there is no evaluator
+worker pool to reduce.
