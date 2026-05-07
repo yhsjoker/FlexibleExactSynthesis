@@ -122,6 +122,7 @@ import sys
 import os
 import paramiko
 import re
+from pathlib import Path
 
 # ================= 配置区域 =================
 VM_IP = "127.0.0.1"
@@ -130,6 +131,9 @@ VM_USER = "joker"
 VM_PASS = "joker"
 VM_WORK_DIR = "/home/joker/remote_work"
 # ===========================================
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+SSH_DEBUG_LOG_DIR = PROJECT_ROOT / "logs" / "ssh_debug"
 
 def parse_blif_inputs(blif_path):
     input_names = []
@@ -179,8 +183,9 @@ def main():
     module_name = filename.replace(".blif", "")
     local_tcl_path = local_blif_path + ".generated.tcl"
     
-    # 🚀 【核心改动 1】在本地生成专属调试日志
-    debug_log_path = f"debug_ssh_{module_name}.log"
+    # 调试日志统一收纳到项目根目录下的 logs/ssh_debug。
+    SSH_DEBUG_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    debug_log_path = SSH_DEBUG_LOG_DIR / f"debug_ssh_{module_name}.log"
 
     if not generate_activity_tcl(local_act_path, local_blif_path, local_tcl_path):
         print(error_output)

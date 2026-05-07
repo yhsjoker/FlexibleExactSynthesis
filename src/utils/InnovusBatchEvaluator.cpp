@@ -122,44 +122,28 @@ void writeLegacyCsvRows(const std::filesystem::path& csvPath,
     }
 }
 
+void removeDirectoryTree(const std::filesystem::path& path) {
+    std::error_code ec;
+    if (std::filesystem::exists(path, ec)) {
+        std::filesystem::remove_all(path, ec);
+    }
+}
+
 std::string standardValidationHeader() {
     return "Benchmark,"
-           "Power_Orig(mW),Power_ABC(mW),Power_PONO(mW),Gain_Power_vs_ABC(%),"
-           "Area_Orig,Area_ABC,Area_PONO,Gain_Area_vs_ABC(%),"
-           "Delay_Orig(ns),Delay_ABC(ns),Delay_PONO(ns),Gain_Delay_vs_ABC(%),"
+           "Power_Orig(mW),Power_ABC(mW),Power_ABC_Local(mW),Power_PONO(mW),"
+           "Gain_Power_vs_ABC(%),Gain_Power_vs_ABC_Local(%),"
+           "Area_Orig,Area_ABC,Area_ABC_Local,Area_PONO,"
+           "Gain_Area_vs_ABC(%),Gain_Area_vs_ABC_Local(%),"
+           "Delay_Orig(ns),Delay_ABC(ns),Delay_ABC_Local(ns),Delay_PONO(ns),"
+           "Gain_Delay_vs_ABC(%),Gain_Delay_vs_ABC_Local(%),"
            "Status";
-}
-
-std::string mappedValidationHeader() {
-    return "Benchmark,"
-           "Power_MappedOrig(mW),Area_MappedOrig,Delay_MappedOrig(ns),"
-           "Power_ABC_Local(mW),Area_ABC_Local,Delay_ABC_Local(ns),"
-           "Power_ABC_Global(mW),Area_ABC_Global,Delay_ABC_Global(ns),"
-           "Power_PONO_Local(mW),Area_PONO_Local,Delay_PONO_Local(ns),"
-           "Gain_Power_ABC_Local_vs_MappedOrig(%),"
-           "Gain_Power_ABC_Global_vs_MappedOrig(%),"
-           "Gain_Power_PONO_vs_MappedOrig(%),"
-           "Gain_Power_PONO_vs_ABC_Local(%),"
-           "Gain_Power_PONO_vs_ABC_Global(%),"
-           "Status";
-}
-
-std::string mappedCompareHeader() {
-    return "Benchmark,"
-           "Power_Orig(mW),Area_Orig,Delay_Orig(ns),"
-           "Power_MappedOrig(mW),Area_MappedOrig,Delay_MappedOrig(ns),"
-           "Power_ABC_Local(mW),Area_ABC_Local,Delay_ABC_Local(ns),"
-           "Power_ABC_Global(mW),Area_ABC_Global,Delay_ABC_Global(ns),"
-           "Power_PONO_Local(mW),Area_PONO_Local,Delay_PONO_Local(ns),"
-           "Gain_Mapped_vs_Orig(%),Gain_ABC_Local_vs_Orig(%),"
-           "Gain_ABC_Global_vs_Orig(%),Gain_PONO_vs_Orig(%),"
-           "Best_Label,Best_Power(mW),Status";
 }
 
 std::string formatStandardValidationRow(const PPADiff& r) {
     std::ostringstream out;
     if (!r.success) {
-        out << r.fileName << ",,,,,,,,,,,,,FAILED";
+        out << r.fileName << ",,,,,,,,,,,,,,,,,,,FAILED";
         return out.str();
     }
 
@@ -167,69 +151,33 @@ std::string formatStandardValidationRow(const PPADiff& r) {
         return (base > 0) ? (base - opt) / base * 100.0 : 0.0;
     };
 
-    const double pGain = calcGain(r.abcHighPPA.power_total, r.ponoPPA.power_total);
-    const double aGain = calcGain(r.abcHighPPA.area, r.ponoPPA.area);
-    const double dGain = calcGain(r.abcHighPPA.delay, r.ponoPPA.delay);
+    const double pGainAbc =
+        calcGain(r.abcHighPPA.power_total, r.ponoPPA.power_total);
+    const double pGainAbcLocal =
+        calcGain(r.abcLocalPPA.power_total, r.ponoPPA.power_total);
+    const double aGainAbc = calcGain(r.abcHighPPA.area, r.ponoPPA.area);
+    const double aGainAbcLocal =
+        calcGain(r.abcLocalPPA.area, r.ponoPPA.area);
+    const double dGainAbc = calcGain(r.abcHighPPA.delay, r.ponoPPA.delay);
+    const double dGainAbcLocal =
+        calcGain(r.abcLocalPPA.delay, r.ponoPPA.delay);
 
     out << r.fileName << ","
         << r.origPPA.power_total << "," << r.abcHighPPA.power_total << ","
+        << r.abcLocalPPA.power_total << ","
         << r.ponoPPA.power_total << ","
-        << std::fixed << std::setprecision(2) << pGain << "%,"
+        << std::fixed << std::setprecision(2) << pGainAbc << "%,"
+        << pGainAbcLocal << "%,"
         << r.origPPA.area << "," << r.abcHighPPA.area << ","
+        << r.abcLocalPPA.area << ","
         << r.ponoPPA.area << ","
-        << aGain << "%,"
+        << aGainAbc << "%,"
+        << aGainAbcLocal << "%,"
         << r.origPPA.delay << "," << r.abcHighPPA.delay << ","
-        << r.ponoPPA.delay << ","
-        << dGain << "%,"
-        << "SUCCESS";
-    return out.str();
-}
-
-std::string formatMappedValidationRow(const MappedFourWayResult& r) {
-    std::ostringstream out;
-    auto writePpaOrNa = [&](const PPAResult& ppa, bool valid) {
-        if (valid) out << ppa.power_total << "," << ppa.area << "," << ppa.delay << ",";
-        else out << "NA,NA,NA,";
-    };
-    auto calcGain = [](double base, double opt) {
-        return (base > 0) ? (base - opt) / base * 100.0 : 0.0;
-    };
-
-    out << r.fileName << ",";
-    if (!r.success) {
-        writePpaOrNa(r.mappedOrigPPA, r.mappedOrigValid);
-        writePpaOrNa(r.abcLocalPPA, r.abcLocalValid);
-        writePpaOrNa(r.abcGlobalPPA, r.abcGlobalValid);
-        writePpaOrNa(r.ponoLocalPPA, r.ponoLocalValid);
-        out << "NA,NA,NA,NA,NA,PARTIAL";
-        return out.str();
-    }
-
-    const double gABC_L_vs_M =
-        calcGain(r.mappedOrigPPA.power_total, r.abcLocalPPA.power_total);
-    const double gABC_G_vs_M =
-        calcGain(r.mappedOrigPPA.power_total, r.abcGlobalPPA.power_total);
-    const double gPONO_vs_M =
-        calcGain(r.mappedOrigPPA.power_total, r.ponoLocalPPA.power_total);
-    const double gPONO_vs_AL =
-        calcGain(r.abcLocalPPA.power_total, r.ponoLocalPPA.power_total);
-    const double gPONO_vs_AG =
-        calcGain(r.abcGlobalPPA.power_total, r.ponoLocalPPA.power_total);
-
-    out << r.mappedOrigPPA.power_total << "," << r.mappedOrigPPA.area << ","
-        << r.mappedOrigPPA.delay << ","
-        << r.abcLocalPPA.power_total << "," << r.abcLocalPPA.area << ","
         << r.abcLocalPPA.delay << ","
-        << r.abcGlobalPPA.power_total << "," << r.abcGlobalPPA.area << ","
-        << r.abcGlobalPPA.delay << ","
-        << r.ponoLocalPPA.power_total << "," << r.ponoLocalPPA.area << ","
-        << r.ponoLocalPPA.delay << ","
-        << std::fixed << std::setprecision(2)
-        << gABC_L_vs_M << ","
-        << gABC_G_vs_M << ","
-        << gPONO_vs_M << ","
-        << gPONO_vs_AL << ","
-        << gPONO_vs_AG << ","
+        << r.ponoPPA.delay << ","
+        << dGainAbc << "%,"
+        << dGainAbcLocal << "%,"
         << "SUCCESS";
     return out.str();
 }
@@ -258,71 +206,9 @@ std::string standardFailureReason(const PPADiff& diff) {
     if (diff.success) return "";
     if (!diff.origPPA.valid) return "Original evaluation failed";
     if (!diff.abcHighPPA.valid) return "ABC global evaluation failed";
+    if (!diff.abcLocalPPA.valid) return "ABC local evaluation failed";
     if (!diff.ponoPPA.valid) return "PONO evaluation failed";
     return "Evaluation failed";
-}
-
-std::string mappedFailureReason(const MappedFourWayResult& diff) {
-    if (diff.success) return "";
-    if (!diff.mappedOrigValid) return "Mapped-origin evaluation failed";
-    if (!diff.abcLocalValid) return "ABC local evaluation failed";
-    if (!diff.abcGlobalValid) return "ABC global evaluation failed";
-    if (!diff.ponoLocalValid) return "PONO local evaluation failed";
-    return "Mapped four-way evaluation failed";
-}
-
-std::string formatMappedCompareRow(const std::string& fileName,
-                                   const PPAResult& origPPA,
-                                   bool origValid,
-                                   const MappedFourWayResult& diff,
-                                   const std::string& bestLabel,
-                                   double bestPower,
-                                   const std::string& legacyStatus) {
-    std::ostringstream out;
-    auto writePpa = [&](const PPAResult& ppa, bool valid) {
-        if (valid) out << ppa.power_total << "," << ppa.area << "," << ppa.delay << ",";
-        else out << "NA,NA,NA,";
-    };
-    auto calcGain = [](double base, double opt) {
-        return (base > 0) ? (base - opt) / base * 100.0 : 0.0;
-    };
-
-    out << fileName << ",";
-    writePpa(origPPA, origValid);
-    writePpa(diff.mappedOrigPPA, diff.mappedOrigValid);
-    writePpa(diff.abcLocalPPA, diff.abcLocalValid);
-    writePpa(diff.abcGlobalPPA, diff.abcGlobalValid);
-    writePpa(diff.ponoLocalPPA, diff.ponoLocalValid);
-
-    if (origValid && diff.mappedOrigValid) {
-        out << calcGain(origPPA.power_total, diff.mappedOrigPPA.power_total)
-            << ",";
-    } else {
-        out << "NA,";
-    }
-    if (origValid && diff.abcLocalValid) {
-        out << calcGain(origPPA.power_total, diff.abcLocalPPA.power_total)
-            << ",";
-    } else {
-        out << "NA,";
-    }
-    if (origValid && diff.abcGlobalValid) {
-        out << calcGain(origPPA.power_total, diff.abcGlobalPPA.power_total)
-            << ",";
-    } else {
-        out << "NA,";
-    }
-    if (origValid && diff.ponoLocalValid) {
-        out << calcGain(origPPA.power_total, diff.ponoLocalPPA.power_total)
-            << ",";
-    } else {
-        out << "NA,";
-    }
-
-    if (std::isfinite(bestPower)) out << bestLabel << "," << bestPower << ",";
-    else out << "NA,NA,";
-    out << legacyStatus;
-    return out.str();
 }
 
 std::string timeoutReason(double runtimeMs, int timeoutMs) {
@@ -372,21 +258,18 @@ void writeEvaluationSummaryJson(const std::filesystem::path& path,
 struct EvaluationCaseRecord {
     std::string caseId;
     std::string benchmark;
-    std::string mode;
     std::string status;
     std::string reason;
     std::string selectedStrategy;
     std::string outputCsv;
     double runtimeMs = 0.0;
     bool origValid = false;
-    bool mappedOrigValid = false;
     bool abcLocalValid = false;
-    bool abcGlobalValid = false;
+    bool abcValid = false;
     bool ponoValid = false;
     PPAResult origPPA;
-    PPAResult mappedOrigPPA;
     PPAResult abcLocalPPA;
-    PPAResult abcGlobalPPA;
+    PPAResult abcPPA;
     PPAResult ponoPPA;
 };
 
@@ -400,12 +283,11 @@ void writeEvaluationCasesCsv(
     std::ofstream out(path);
     if (!out.is_open()) return;
 
-    out << "case_id,benchmark,mode,status,reason,runtime_ms,"
+    out << "case_id,benchmark,status,reason,runtime_ms,"
         << "selected_strategy,output_csv,"
         << "orig_power,orig_area,orig_delay,"
-        << "mapped_orig_power,mapped_orig_area,mapped_orig_delay,"
         << "abc_local_power,abc_local_area,abc_local_delay,"
-        << "abc_global_power,abc_global_area,abc_global_delay,"
+        << "abc_power,abc_area,abc_delay,"
         << "pono_power,pono_area,pono_delay\n";
 
     auto writePpa = [&](const PPAResult& ppa, bool valid) {
@@ -419,7 +301,6 @@ void writeEvaluationCasesCsv(
     for (const auto& r : records) {
         out << csvEscapeLocal(r.caseId) << ","
             << csvEscapeLocal(r.benchmark) << ","
-            << csvEscapeLocal(r.mode) << ","
             << csvEscapeLocal(r.status) << ","
             << csvEscapeLocal(r.reason) << ","
             << std::fixed << std::setprecision(3) << r.runtimeMs << ","
@@ -427,11 +308,9 @@ void writeEvaluationCasesCsv(
             << csvEscapeLocal(r.outputCsv) << ",";
         writePpa(r.origPPA, r.origValid);
         out << ",";
-        writePpa(r.mappedOrigPPA, r.mappedOrigValid);
-        out << ",";
         writePpa(r.abcLocalPPA, r.abcLocalValid);
         out << ",";
-        writePpa(r.abcGlobalPPA, r.abcGlobalValid);
+        writePpa(r.abcPPA, r.abcValid);
         out << ",";
         writePpa(r.ponoPPA, r.ponoValid);
         out << "\n";
@@ -525,7 +404,7 @@ void InnovusBatchEvaluator::runBatchVerification(const std::string& benchmarksDi
     summary.manifestCsv = manifestCsv;
     summary.totalCases = files.size();
 
-    std::cout << "\n>>> Phase 3: Triple-Path Physical Validation (Dual-Engine Mode) <<<" << std::endl;
+    std::cout << "\n>>> Phase 3: Unified Four-Method Physical Validation <<<" << std::endl;
 
     for (size_t i = 0; i < files.size(); ++i) {
         std::string filePath = files[i];
@@ -551,7 +430,6 @@ void InnovusBatchEvaluator::runBatchVerification(const std::string& benchmarksDi
             EvaluationCaseRecord record;
             record.caseId = caseId;
             record.benchmark = fileName;
-            record.mode = "standard";
             record.status = runStatusToString(RunStatus::kSkipped);
             record.reason = "Skipped by resume policy; previous status=" +
                             previousStatus;
@@ -581,19 +459,12 @@ void InnovusBatchEvaluator::runBatchVerification(const std::string& benchmarksDi
         const auto caseStart = std::chrono::steady_clock::now();
         
         int inputNum = countBlifInputs(filePath);
-        const int kNumWorkloadSets = 1;
-        auto workloads =
-            verifier_.generateWorkloadSets(inputNum, kNumWorkloadSets, 1000);
-
-        std::vector<double> avgProbs(inputNum, 0.0);
-        for (const auto& wl : workloads) {
-            for (int j = 0; j < inputNum && j < (int)wl.probs.size(); ++j) {
-                avgProbs[j] += wl.probs[j];
-            }
-        }
-        const double workloadCount = std::max<size_t>(1, workloads.size());
-        for (int j = 0; j < inputNum; ++j) {
-            avgProbs[j] /= workloadCount;
+        auto workloads = verifier_.generateWorkloadSets(inputNum, 1, 1000);
+        const WorkloadSet workload =
+            workloads.empty() ? WorkloadSet{} : workloads.front();
+        std::vector<double> avgProbs = workload.probs;
+        if (avgProbs.size() < static_cast<size_t>(inputNum)) {
+            avgProbs.resize(inputNum, 0.5);
         }
 
         auto printPPA = [](const std::string& label, const PPAResult& res) {
@@ -604,16 +475,31 @@ void InnovusBatchEvaluator::runBatchVerification(const std::string& benchmarksDi
                 std::cout << "    [" << label << "] Evaluation FAILED." << std::endl;
             }
         };
+        auto evalOnce = [&](const std::string& blifPath) {
+            return verifier_.getPPAResult(
+                blifPath, workload.probs, workload.acts);
+        };
 
         std::cout << "  - Evaluating Original..." << std::endl;
-        diff.origPPA = verifier_.getAveragePPAResult(filePath, workloads); 
+        diff.origPPA = evalOnce(filePath);
         printPPA("ORIG", diff.origPPA);
 
         std::cout << "  - Running ABC Script..." << std::endl;
         std::string abcHigh = runABCExhaustiveOpt(filePath); 
         if (!abcHigh.empty() && std::filesystem::exists(abcHigh)) {
-            diff.abcHighPPA = verifier_.getAveragePPAResult(abcHigh, workloads);
+            diff.abcHighPPA = evalOnce(abcHigh);
             printPPA("ABC ", diff.abcHighPPA);
+        }
+
+        std::cout << "  - Running ABC Local-Library Rewrite..." << std::endl;
+        std::string mappedOrigin = run4LutMappingOnly(filePath);
+        if (!mappedOrigin.empty() && std::filesystem::exists(mappedOrigin)) {
+            const std::string abcLocalBlif =
+                rewriteMappedBlifWithABCLibrarySimple(mappedOrigin, avgProbs);
+            if (!abcLocalBlif.empty() && std::filesystem::exists(abcLocalBlif)) {
+                diff.abcLocalPPA = evalOnce(abcLocalBlif);
+                printPPA("ABC-L", diff.abcLocalPPA);
+            }
         }
 
         std::cout << "  - Running PONO Optimization (Tournament Mode)..." << std::endl;
@@ -622,14 +508,14 @@ void InnovusBatchEvaluator::runBatchVerification(const std::string& benchmarksDi
         std::string ponoAggBlif = rewriteBlifWithLibrary(filePath, avgProbs, true); 
         PPAResult aggPPA; aggPPA.valid = false;
         if (!ponoAggBlif.empty() && std::filesystem::exists(ponoAggBlif)) {
-            aggPPA = verifier_.getAveragePPAResult(ponoAggBlif, workloads);
+            aggPPA = evalOnce(ponoAggBlif);
         }
 
         // 引擎 B：保守模式 (Conservative)
         std::string ponoConsBlif = rewriteBlifWithLibrary(filePath, avgProbs, false);
         PPAResult consPPA; consPPA.valid = false;
         if (!ponoConsBlif.empty() && std::filesystem::exists(ponoConsBlif)) {
-            consPPA = verifier_.getAveragePPAResult(ponoConsBlif, workloads);
+            consPPA = evalOnce(ponoConsBlif);
         }
 
         // 锦标赛决断：不看 ORIG，只选内部最优
@@ -651,7 +537,8 @@ void InnovusBatchEvaluator::runBatchVerification(const std::string& benchmarksDi
             std::cout << "    [Strategy Selected] " << winningStrategy << std::endl;
         }
 
-        diff.success = (diff.origPPA.valid && diff.abcHighPPA.valid && diff.ponoPPA.valid);
+        diff.success = (diff.origPPA.valid && diff.abcHighPPA.valid &&
+                        diff.abcLocalPPA.valid && diff.ponoPPA.valid);
         legacyRows[fileName] = formatStandardValidationRow(diff);
         writeLegacyCsvRows(validationCsv, standardValidationHeader(), legacyRows);
 
@@ -689,7 +576,6 @@ void InnovusBatchEvaluator::runBatchVerification(const std::string& benchmarksDi
         EvaluationCaseRecord record;
         record.caseId = caseId;
         record.benchmark = fileName;
-        record.mode = "standard";
         record.status = runStatusToString(status);
         record.reason = reason;
         record.runtimeMs = runtimeMs;
@@ -697,18 +583,22 @@ void InnovusBatchEvaluator::runBatchVerification(const std::string& benchmarksDi
         record.outputCsv = validationCsv.string();
         record.origValid = diff.origPPA.valid;
         record.origPPA = diff.origPPA;
-        record.abcGlobalValid = diff.abcHighPPA.valid;
-        record.abcGlobalPPA = diff.abcHighPPA;
+        record.abcLocalValid = diff.abcLocalPPA.valid;
+        record.abcLocalPPA = diff.abcLocalPPA;
+        record.abcValid = diff.abcHighPPA.valid;
+        record.abcPPA = diff.abcHighPPA;
         record.ponoValid = diff.ponoPPA.valid;
         record.ponoPPA = diff.ponoPPA;
         caseRecords.push_back(record);
 
         if (diff.success) {
             double pGainABC = (diff.abcHighPPA.power_total > 0) ? (diff.abcHighPPA.power_total - diff.ponoPPA.power_total) / diff.abcHighPPA.power_total * 100.0 : 0.0;
+            double pGainABCLocal = (diff.abcLocalPPA.power_total > 0) ? (diff.abcLocalPPA.power_total - diff.ponoPPA.power_total) / diff.abcLocalPPA.power_total * 100.0 : 0.0;
             double pGainOrig = (diff.origPPA.power_total > 0) ? (diff.origPPA.power_total - diff.ponoPPA.power_total) / diff.origPPA.power_total * 100.0 : 0.0;
             
             std::cout << "  >>> Result: SUCCESS" << std::endl;
             std::cout << "      Net Power Gain vs ABC: " << std::fixed << std::setprecision(2) << pGainABC << "%" << std::endl;
+            std::cout << "      Net Power Gain vs ABC Local: " << std::fixed << std::setprecision(2) << pGainABCLocal << "%" << std::endl;
             std::cout << "      Total Power Gain vs Orig: " << std::fixed << std::setprecision(2) << pGainOrig << "%" << std::endl;
         } else {
             std::cout << "  >>> Result: FAILED" << std::endl;
@@ -722,6 +612,7 @@ void InnovusBatchEvaluator::runBatchVerification(const std::string& benchmarksDi
     writeLegacyCsvRows(validationCsv, standardValidationHeader(), legacyRows);
     writeEvaluationCasesCsv(casesCsv, caseRecords);
     writeEvaluationSummaryJson(summaryJson, summary, casesCsv, validationCsv);
+    removeDirectoryTree(workDir_);
 }
 
 void InnovusBatchEvaluator::loadOptimizationLibrary() {
@@ -1114,8 +1005,8 @@ std::string fes::InnovusBatchEvaluator::rewriteBlifUnified(
     const std::string cleanBlif =
         (workDir / (baseName + "_clean" + suffix + ".blif")).string();
 
-    // Pre-mapping step: legacy PONO engines run `strash; if -K 4 -a` here;
-    // the mapped-origin flows pass an already-mapped BLIF and set
+    // Pre-mapping step: the PONO tournament runs `strash; if -K 4 -a` here;
+    // the ABC local-library path passes an already-mapped BLIF and sets
     // preMapAbcSeq = "" to skip this.
     std::string workingBlif;
     if (cfg.preMapAbcSeq.empty()) {
@@ -1217,12 +1108,17 @@ std::string fes::InnovusBatchEvaluator::rewriteBlifUnified(
             const std::string& localSuffix,
             const NpnRecipe& recipe,
             const std::vector<std::string>& canonicalPorts,
+            const std::vector<std::string>& constZeroNets,
             const std::string& realOutNet) -> std::string {
             std::stringstream ss(fragment);
             std::string ln;
             std::string prelude;
             std::string processed;
             std::string epilogue;
+
+            for (const auto& constNet : constZeroNets) {
+                prelude += ".names " + constNet + "\n";
+            }
 
             for (size_t i = 0; i < canonicalPorts.size(); ++i) {
                 if (!recipe.inputNegations.empty() && recipe.inputNegations[i]) {
@@ -1474,12 +1370,22 @@ std::string fes::InnovusBatchEvaluator::rewriteBlifUnified(
             parseFragmentIO(cand.blifContent, libInputs, libOutputs,
                             fragmentGates);
 
-            if (libInputs.size() != ports.size()) continue;
+            if (libInputs.size() < ports.size()) continue;
+            if (!cfg.allowPadMissingInputs &&
+                libInputs.size() != ports.size()) {
+                continue;
+            }
             if (libOutputs.size() != 1) continue;
             if (fragmentGates <= 0) continue;
 
+            std::vector<double> candidateInputProbs = matchedInputProbs;
+            if (libInputs.size() > candidateInputProbs.size()) {
+                if (!cfg.allowPadMissingInputs) continue;
+                candidateInputProbs.resize(libInputs.size(), 0.0);
+            }
+
             auto [fpi, score] = scoreCandidate(
-                cand, matchedInputProbs, normalizedLibScore,
+                cand, candidateInputProbs, normalizedLibScore,
                 recipeNegationCount);
 
             if (cfg.useImprovementFilter &&
@@ -1498,12 +1404,20 @@ std::string fes::InnovusBatchEvaluator::rewriteBlifUnified(
             if (better) {
                 std::string localSuffix = "_v" + std::to_string(instanceId);
                 std::vector<std::string> emittedInputNets = matchedPorts;
+                std::vector<std::string> constZeroNets;
                 for (size_t i = 0; i < emittedInputNets.size(); ++i) {
                     if (!emitRecipe.inputNegations.empty() &&
                         emitRecipe.inputNegations[i]) {
                         emittedInputNets[i] =
                             "inv_in_" + std::to_string(i) + localSuffix;
                     }
+                }
+                for (size_t i = emittedInputNets.size();
+                     i < libInputs.size(); ++i) {
+                    const std::string constNet =
+                        "const0_" + std::to_string(i) + localSuffix;
+                    emittedInputNets.push_back(constNet);
+                    constZeroNets.push_back(constNet);
                 }
                 const std::string emittedOutNet =
                     emitRecipe.outputNegation
@@ -1518,7 +1432,7 @@ std::string fes::InnovusBatchEvaluator::rewriteBlifUnified(
                 best.recipe = emitRecipe;
                 best.processedFragment = remapFragmentForEmit(
                     cand.blifContent, portMap, primaryIOs, localSuffix,
-                    emitRecipe, matchedPorts, outNet);
+                    emitRecipe, matchedPorts, constZeroNets, outNet);
             }
         }
 
@@ -1597,6 +1511,9 @@ SingleOptResult InnovusBatchEvaluator::optimizeSingleBlifFromContent(
     namespace fs = std::filesystem;
     fs::path workDir = workDir_;
     if (!fs::exists(workDir)) fs::create_directories(workDir);
+    const auto cleanupWorkDir = [&]() {
+        removeDirectoryTree(workDir_);
+    };
     
     std::string tempInputPath = (workDir / generateTempFilename()).string();
     std::ofstream ofs(tempInputPath);
@@ -1605,6 +1522,7 @@ SingleOptResult InnovusBatchEvaluator::optimizeSingleBlifFromContent(
         ofs.close();
     } else {
         result.errorMessage = "Failed to create internal temp file.";
+        cleanupWorkDir();
         return result;
     }
 
@@ -1627,6 +1545,7 @@ SingleOptResult InnovusBatchEvaluator::optimizeSingleBlifFromContent(
     } else {
         result.errorMessage = "Original BLIF evaluation failed.";
         std::remove(tempInputPath.c_str()); // 清理
+        cleanupWorkDir();
         return result;
     }
 
@@ -1659,6 +1578,7 @@ SingleOptResult InnovusBatchEvaluator::optimizeSingleBlifFromContent(
 
     // 清理初始的临时输入文件
     std::remove(tempInputPath.c_str());
+    cleanupWorkDir();
 
     return result;
 }
@@ -1867,39 +1787,6 @@ std::string fes::InnovusBatchEvaluator::run4LutMappingOnly(const std::string& in
     return verifyRewriteOrRevert(inputBlif, outPath, "ABC_lut4_map");
 }
 
-std::string fes::InnovusBatchEvaluator::runABCGlobalStrongOnMapped(const std::string& mappedBlif) {
-    namespace fs = std::filesystem;
-
-    fs::path workDir = workDir_;
-    if (!fs::exists(workDir)) fs::create_directories(workDir);
-
-    std::string baseName = fs::path(mappedBlif).stem().string();
-    std::string outPath  = (workDir / (baseName + "_abc_global_strong.blif")).string();
-    std::string logPath  = (workDir / (baseName + "_abc_global_strong.log")).string();
-
-    // 不依赖 abc.rc，直接展开强脚本
-    std::string seq =
-        "strash; "
-        "dc2; "
-        "balance; rewrite; balance; rewrite; rewrite -z; balance; rewrite -z; balance; "
-        "if -K " + abcLutK() + " -a";
-
-    std::string cmd = abcPath_ + " -c \"read_blif " + mappedBlif +
-                      "; " + seq +
-                      "; write_blif " + outPath +
-                      "\" > " + logPath + " 2>&1";
-
-    int ret = system(cmd.c_str());
-
-    if (ret != 0 || !fs::exists(outPath)) {
-        std::cerr << "[ABC-G] Failed on " << baseName
-                  << " | log: " << logPath << std::endl;
-        return "";
-    }
-
-    return verifyRewriteOrRevert(mappedBlif, outPath, "ABC_global_strong");
-}
-
 double fes::InnovusBatchEvaluator::computeSopOutputProb(
     const std::vector<std::string>& sop,
     const std::vector<double>& inProbs)
@@ -2066,8 +1953,10 @@ FragmentPowerInfo fes::InnovusBatchEvaluator::estimateFragmentSwitching(
 
 // ============================================================================
 // Thin adapter over rewriteBlifUnified: inputs are already LUT4-mapped, so we
-// skip the internal pre-mapping; enable the improvement filter and the heavy
-// ABC cleanup pass that the legacy mapped-origin flow relied on.
+// skip the internal pre-mapping. For the ABC local-library baseline we replace
+// every LUT that is covered by the library; the local score only chooses which
+// ABC fragment to use when multiple implementations exist for the same truth
+// table, and never gates replacement itself.
 // ============================================================================
 std::string fes::InnovusBatchEvaluator::rewriteMappedBlifWithGivenLibrarySimple(
     const std::string& mappedBlifPath,
@@ -2083,8 +1972,9 @@ std::string fes::InnovusBatchEvaluator::rewriteMappedBlifWithGivenLibrarySimple(
     cfg.kLibraryScoreWeight  = 0.08;
     cfg.enableNpn           = false;
     cfg.allowNegation       = false;
-    cfg.useImprovementFilter = true;
-    cfg.kImproveMargin       = 0.01;
+    cfg.useImprovementFilter = false;
+    cfg.kImproveMargin       = 0.0;
+    cfg.allowPadMissingInputs = true;
     cfg.cleanupAbcSeq        = "strash; dc2; balance; if -K " + abcLutK() +
                                " -a; sweep; topo";
     cfg.tag                  = tag;
@@ -2103,333 +1993,6 @@ std::string fes::InnovusBatchEvaluator::rewriteMappedBlifWithABCLibrarySimple(
         mappedBlifPath, actualProbs, abcHexMappingLib_, "ABC_LIB");
 }
 
-std::string fes::InnovusBatchEvaluator::rewriteMappedBlifWithPONOLibrarySimple(
-    const std::string& mappedBlifPath,
-    const std::vector<double>& actualProbs)
-{
-    if (hexMappingLib_.empty()) {
-        std::cerr << "[PONO-LIB] hexMappingLib_ is empty.\n";
-        return "";
-    }
-    return rewriteMappedBlifWithGivenLibrarySimple(
-        mappedBlifPath, actualProbs, hexMappingLib_, "PONO_LIB");
-}
-
-void fes::InnovusBatchEvaluator::runBatchVerificationMappedFourWay(const std::string& benchmarksDir) {
-    namespace fs = std::filesystem;
-    auto files = findBlifFilesRecursive(benchmarksDir);
-    std::vector<EvaluationCaseRecord> caseRecords;
-
-    const fs::path outputRoot = fs::path(libPath_);
-    const fs::path validationCsv =
-        outputRoot / "ppa_mapped_four_way_validation.csv";
-    const fs::path compareCsv = outputRoot / "ppa_orig_vs_mapped_compare.csv";
-    const fs::path manifestCsv = outputRoot / "evaluation_manifest.csv";
-    const fs::path casesCsv = outputRoot / "evaluation_cases.csv";
-    const fs::path summaryJson = outputRoot / "evaluation_summary.json";
-
-    fs::create_directories(outputRoot);
-    fs::create_directories(workDir_);
-
-    RunManifest manifest(manifestCsv);
-    manifest.load();
-    auto validationRows = loadLegacyCsvRows(validationCsv);
-    auto compareRows = loadLegacyCsvRows(compareCsv);
-
-    RunSummary summary;
-    summary.command = "evaluate";
-    summary.activityMode = "mapped_four_way";
-    summary.outputCsv = validationCsv;
-    summary.manifestCsv = manifestCsv;
-    summary.totalCases = files.size();
-
-    std::cout << "\n>>> Phase 3B: Four-Way Validation on LUT4-Mapped Origin <<<" << std::endl;
-
-    auto calcGain = [](double base, double opt) {
-        return (base > 0) ? (base - opt) / base * 100.0 : 0.0;
-    };
-
-    for (size_t i = 0; i < files.size(); ++i) {
-        std::string filePath = files[i];
-        std::string fileName = fs::path(filePath).filename().string();
-        const std::string benchmarkId = benchmarkCaseId(filePath, benchmarksDir);
-        std::string caseId = "mapped_four_way:" + benchmarkId;
-        const bool shouldRun = manifest.shouldRun(caseId, resumePolicy_);
-        const bool isResumeAttempt =
-            manifest.isResumeAttempt(caseId, resumePolicy_);
-
-        std::cout << "====================================================" << std::endl;
-        std::cout << "[" << (i + 1) << "/" << files.size() << "] Benchmark: " << fileName << std::endl;
-
-        if (!shouldRun) {
-            const RunManifestEntry* previous = manifest.find(caseId);
-            const std::string previousStatus =
-                previous ? runStatusToString(previous->status) : "unknown";
-            std::cout << "  >>> Result: SKIPPED (resume policy, previous status="
-                      << previousStatus << ")" << std::endl << std::endl;
-            ++summary.skippedCases;
-
-            EvaluationCaseRecord record;
-            record.caseId = caseId;
-            record.benchmark = fileName;
-            record.mode = "mapped_four_way";
-            record.status = runStatusToString(RunStatus::kSkipped);
-            record.reason = "Skipped by resume policy; previous status=" +
-                            previousStatus;
-            record.outputCsv = validationCsv.string();
-            caseRecords.push_back(record);
-            continue;
-        }
-
-        if (isResumeAttempt) {
-            ++summary.resumedCases;
-            RunManifestEntry resumedEntry;
-            resumedEntry.caseId = caseId;
-            resumedEntry.kind = "evaluate";
-            resumedEntry.functionId = benchmarkId;
-            resumedEntry.activityMode = "mapped_four_way";
-            resumedEntry.status = RunStatus::kResumed;
-            resumedEntry.outputPath = validationCsv.string();
-            resumedEntry.reason = "Resumed by policy " +
-                                  resumePolicyToString(resumePolicy_);
-            manifest.update(resumedEntry);
-            manifest.flush();
-        }
-        ++summary.runCases;
-
-        MappedFourWayResult diff;
-        diff.fileName = fileName;
-        PPAResult origPPA;
-        bool origValid = false;
-        std::string bestLabel = "NA";
-        double bestPower = std::numeric_limits<double>::infinity();
-        const auto caseStart = std::chrono::steady_clock::now();
-
-        auto finishCase =
-            [&](const std::string& fallbackReason,
-                const std::string& legacyCompareStatus) {
-                const auto caseEnd = std::chrono::steady_clock::now();
-                const double runtimeMs =
-                    std::chrono::duration<double, std::milli>(
-                        caseEnd - caseStart)
-                        .count();
-                const RunStatus status =
-                    evaluationStatus(diff.success, runtimeMs, caseTimeoutMs_);
-                const std::string reason =
-                    status == RunStatus::kTimeout
-                        ? timeoutReason(runtimeMs, caseTimeoutMs_)
-                        : (!fallbackReason.empty()
-                               ? fallbackReason
-                               : mappedFailureReason(diff));
-
-                validationRows[fileName] = formatMappedValidationRow(diff);
-                compareRows[fileName] =
-                    formatMappedCompareRow(fileName, origPPA, origValid, diff,
-                                           bestLabel, bestPower,
-                                           legacyCompareStatus);
-                writeLegacyCsvRows(validationCsv, mappedValidationHeader(),
-                                   validationRows);
-                writeLegacyCsvRows(compareCsv, mappedCompareHeader(),
-                                   compareRows);
-
-                if (status == RunStatus::kSuccess) {
-                    ++summary.successCases;
-                } else if (status == RunStatus::kTimeout) {
-                    ++summary.timeoutCases;
-                } else {
-                    ++summary.failedCases;
-                }
-
-                RunManifestEntry manifestEntry;
-                manifestEntry.caseId = caseId;
-                manifestEntry.kind = "evaluate";
-                manifestEntry.functionId = benchmarkId;
-                manifestEntry.activityMode = "mapped_four_way";
-                manifestEntry.status = status;
-                manifestEntry.runtimeMs = runtimeMs;
-                manifestEntry.outputPath = validationCsv.string();
-                manifestEntry.reason = reason;
-                manifest.update(manifestEntry);
-                manifest.flush();
-
-                EvaluationCaseRecord record;
-                record.caseId = caseId;
-                record.benchmark = fileName;
-                record.mode = "mapped_four_way";
-                record.status = runStatusToString(status);
-                record.reason = reason;
-                record.runtimeMs = runtimeMs;
-                record.selectedStrategy = bestLabel;
-                record.outputCsv = validationCsv.string();
-                record.origValid = origValid;
-                record.origPPA = origPPA;
-                record.mappedOrigValid = diff.mappedOrigValid;
-                record.mappedOrigPPA = diff.mappedOrigPPA;
-                record.abcLocalValid = diff.abcLocalValid;
-                record.abcLocalPPA = diff.abcLocalPPA;
-                record.abcGlobalValid = diff.abcGlobalValid;
-                record.abcGlobalPPA = diff.abcGlobalPPA;
-                record.ponoValid = diff.ponoLocalValid;
-                record.ponoPPA = diff.ponoLocalPPA;
-                caseRecords.push_back(record);
-
-                if (status == RunStatus::kTimeout) {
-                    std::cout << "      Manifest status: TIMEOUT (" << reason
-                              << ")" << std::endl;
-                }
-            };
-
-        auto printPPA = [](const std::string& label, const PPAResult& res) {
-            if (res.valid) {
-                std::cout << "    [" << label << "] Power: "
-                          << std::fixed << std::setprecision(3) << res.power_total
-                          << " mW, Area: " << res.area
-                          << ", Delay: " << res.delay << " ns" << std::endl;
-            } else {
-                std::cout << "    [" << label << "] Evaluation FAILED." << std::endl;
-            }
-        };
-
-        std::cout << "  - Generating LUT4 mapped origin..." << std::endl;
-        std::string mappedOrigin = run4LutMappingOnly(filePath);
-        if (mappedOrigin.empty() || !fs::exists(mappedOrigin)) {
-            std::cout << "  >>> Result: FAILED (mapping failed)" << std::endl << std::endl;
-            finishCase("LUT4 mapping failed", "FAILED");
-            continue;
-        }
-
-        int origInputNum = countBlifInputs(filePath);
-        int mappedInputNum = countBlifInputs(mappedOrigin);
-        int inputNum = mappedInputNum > 0 ? mappedInputNum : origInputNum;
-
-        std::cout << "    [INFO] Inputs(orig=" << origInputNum
-                  << ", mapped=" << mappedInputNum
-                  << ", used=" << inputNum << ")" << std::endl;
-
-        if (inputNum <= 0) {
-            std::cout << "  >>> Result: FAILED (invalid input count)" << std::endl << std::endl;
-            finishCase("Invalid mapped input count", "FAILED");
-            continue;
-        }
-
-        const int kNumWorkloadSets = 4;
-        auto workloads = verifier_.generateWorkloadSets(inputNum, kNumWorkloadSets, 1000);
-
-        std::vector<double> avgProbs(inputNum, 0.0);
-        for (const auto& wl : workloads) {
-            for (int j = 0; j < inputNum && j < (int)wl.probs.size(); ++j) {
-                avgProbs[j] += wl.probs[j];
-            }
-        }
-        double workloadCount = std::max<size_t>(1, workloads.size());
-        for (int j = 0; j < inputNum; ++j) {
-            avgProbs[j] /= workloadCount;
-        }
-
-        std::cout << "  - Evaluating True Original..." << std::endl;
-        if (origInputNum == inputNum) {
-            origPPA = verifier_.getAveragePPAResult(filePath, workloads);
-        } else {
-            auto origWorkloads = verifier_.generateWorkloadSets(origInputNum, kNumWorkloadSets, 1000);
-            origPPA = verifier_.getAveragePPAResult(filePath, origWorkloads);
-        }
-        origValid = origPPA.valid;
-        printPPA("ORIG", origPPA);
-
-        std::cout << "  - Evaluating Mapped-Origin..." << std::endl;
-        diff.mappedOrigPPA = verifier_.getAveragePPAResult(mappedOrigin, workloads);
-        diff.mappedOrigValid = diff.mappedOrigPPA.valid;
-        printPPA("M-ORG", diff.mappedOrigPPA);
-
-        std::cout << "  - Running ABC local-library rewrite..." << std::endl;
-        std::string abcLocalBlif = rewriteMappedBlifWithABCLibrarySimple(mappedOrigin, avgProbs);
-        if (!abcLocalBlif.empty() && std::filesystem::exists(abcLocalBlif)) {
-            diff.abcLocalPPA = verifier_.getAveragePPAResult(abcLocalBlif, workloads);
-            diff.abcLocalValid = diff.abcLocalPPA.valid;
-            printPPA("ABC-L", diff.abcLocalPPA);
-        }
-
-        std::cout << "  - Running ABC global strong flow..." << std::endl;
-        std::string abcGlobalBlif = runABCGlobalStrongOnMapped(mappedOrigin);
-        if (!abcGlobalBlif.empty() && std::filesystem::exists(abcGlobalBlif)) {
-            diff.abcGlobalPPA = verifier_.getAveragePPAResult(abcGlobalBlif, workloads);
-            diff.abcGlobalValid = diff.abcGlobalPPA.valid;
-            printPPA("ABC-G", diff.abcGlobalPPA);
-        }
-
-        std::cout << "  - Running PONO local-library rewrite..." << std::endl;
-        std::string ponoLocalBlif = rewriteMappedBlifWithPONOLibrarySimple(mappedOrigin, avgProbs);
-        if (!ponoLocalBlif.empty() && std::filesystem::exists(ponoLocalBlif)) {
-            diff.ponoLocalPPA = verifier_.getAveragePPAResult(ponoLocalBlif, workloads);
-            diff.ponoLocalValid = diff.ponoLocalPPA.valid;
-            printPPA("PONO ", diff.ponoLocalPPA);
-        }
-
-        diff.success =
-            diff.mappedOrigValid &&
-            diff.abcLocalValid &&
-            diff.abcGlobalValid &&
-            diff.ponoLocalValid;
-
-        bestLabel = origValid ? "ORIG" : "M-ORG";
-        bestPower = origValid ? origPPA.power_total : (diff.mappedOrigValid ? diff.mappedOrigPPA.power_total : std::numeric_limits<double>::infinity());
-        auto tryUpdateBest = [&](const std::string& label, const PPAResult& ppa, bool valid) {
-            if (valid && ppa.power_total < bestPower) {
-                bestPower = ppa.power_total;
-                bestLabel = label;
-            }
-        };
-        tryUpdateBest("M-ORG", diff.mappedOrigPPA, diff.mappedOrigValid);
-        tryUpdateBest("ABC-L", diff.abcLocalPPA, diff.abcLocalValid);
-        tryUpdateBest("ABC-G", diff.abcGlobalPPA, diff.abcGlobalValid);
-        tryUpdateBest("PONO", diff.ponoLocalPPA, diff.ponoLocalValid);
-
-        if (origValid && diff.mappedOrigValid) {
-            std::cout << "      Mapped-Origin vs True Original: "
-                      << std::fixed << std::setprecision(2)
-                      << calcGain(origPPA.power_total, diff.mappedOrigPPA.power_total) << "%" << std::endl;
-        }
-        if (origValid && diff.abcLocalValid) {
-            std::cout << "      ABC-Local vs True Original: "
-                      << calcGain(origPPA.power_total, diff.abcLocalPPA.power_total) << "%" << std::endl;
-        }
-        if (origValid && diff.abcGlobalValid) {
-            std::cout << "      ABC-Global vs True Original: "
-                      << calcGain(origPPA.power_total, diff.abcGlobalPPA.power_total) << "%" << std::endl;
-        }
-        if (origValid && diff.ponoLocalValid) {
-            std::cout << "      PONO vs True Original: "
-                      << calcGain(origPPA.power_total, diff.ponoLocalPPA.power_total) << "%" << std::endl;
-        }
-
-        if (diff.success) {
-            std::cout << "  >>> Result: SUCCESS" << std::endl;
-            std::cout << "      PONO vs Mapped-Origin: "
-                      << std::fixed << std::setprecision(2)
-                      << calcGain(diff.mappedOrigPPA.power_total, diff.ponoLocalPPA.power_total) << "%" << std::endl;
-            std::cout << "      PONO vs ABC-Local: "
-                      << calcGain(diff.abcLocalPPA.power_total, diff.ponoLocalPPA.power_total) << "%" << std::endl;
-            std::cout << "      PONO vs ABC-Global: "
-                      << calcGain(diff.abcGlobalPPA.power_total, diff.ponoLocalPPA.power_total) << "%" << std::endl;
-            std::cout << "      Lowest-power observed: " << bestLabel << " ("
-                      << std::fixed << std::setprecision(3) << bestPower << " mW)" << std::endl;
-        } else {
-            std::cout << "  >>> Result: PARTIAL/FAILED" << std::endl;
-            if (std::isfinite(bestPower)) {
-                std::cout << "      Lowest-power observed among valid runs: " << bestLabel << " ("
-                          << std::fixed << std::setprecision(3) << bestPower << " mW)" << std::endl;
-            }
-        }
-
-        finishCase("", diff.success ? "SUCCESS" : "PARTIAL");
-        std::cout << std::endl;
-    }
-
-    writeLegacyCsvRows(validationCsv, mappedValidationHeader(), validationRows);
-    writeLegacyCsvRows(compareCsv, mappedCompareHeader(), compareRows);
-    writeEvaluationCasesCsv(casesCsv, caseRecords);
-    writeEvaluationSummaryJson(summaryJson, summary, casesCsv, validationCsv);
-}
 
 
 } // namespace fes

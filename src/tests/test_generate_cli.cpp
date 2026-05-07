@@ -86,6 +86,33 @@ void writeTextFile(const fs::path& path, const std::string& text) {
     output << text;
 }
 
+fs::path findProjectRootForShippedConfigs() {
+    std::vector<fs::path> seeds = {
+        fs::current_path(),
+        fs::path(__FILE__).parent_path(),
+        fs::path(__FILE__).parent_path().parent_path(),
+        fs::path(__FILE__).parent_path().parent_path().parent_path()
+    };
+
+    for (const fs::path& seed : seeds) {
+        fs::path current = seed;
+        while (!current.empty()) {
+            if (fs::exists(current / "config" / "build_library.json") &&
+                fs::exists(current / "config" / "evaluate_default.json")) {
+                return current;
+            }
+            const fs::path parent = current.parent_path();
+            if (parent == current) {
+                break;
+            }
+            current = parent;
+        }
+    }
+
+    throw std::runtime_error(
+        "Failed to locate project root for shipped config tests.");
+}
+
 void verifyConfigParsingAndCliPrecedence() {
     const fs::path path =
         fs::temp_directory_path() / "pono_generate_config_test.json";
@@ -172,8 +199,8 @@ void verifyEvaluationConfigParsing() {
         "  \"benchmark\": {\n"
         "    \"benchmark_dir\": \"/tmp/benches\",\n"
         "    \"library_dir\": \"results_repo/lib\",\n"
+        "    \"abc_local_library_dir\": \"results_repo/lib_abc_local\",\n"
         "    \"verify\": true,\n"
-        "    \"mode\": \"standard\",\n"
         "    \"timeouts_ms\": {\"case\": 700}\n"
         "  }\n"
         "}\n");
@@ -184,6 +211,8 @@ void verifyEvaluationConfigParsing() {
             "Evaluation benchmark_dir was not parsed.");
     require(opts.libraryDir == fs::path("results_repo/lib"),
             "Evaluation library_dir was not parsed.");
+    require(opts.abcLocalLibraryDir == fs::path("results_repo/lib_abc_local"),
+            "Evaluation abc_local_library_dir was not parsed.");
     require(opts.verify, "Evaluation verify was not parsed.");
     require(opts.abcPath == "/tmp/abc_for_eval",
             "Evaluation dependencies.abc_path was not parsed.");
@@ -195,6 +224,45 @@ void verifyEvaluationConfigParsing() {
                 opts.maxTotalMemoryMb == 4096,
             "Evaluation memory budget fields were not parsed.");
     fs::remove(path);
+}
+
+void verifyShippedConfigsParse() {
+    const fs::path projectRoot = findProjectRootForShippedConfigs();
+
+    const fs::path buildConfig = projectRoot / "config" / "build_library.json";
+    const fs::path buildSmallConfig =
+        projectRoot / "config" / "build_library_small.json";
+    const fs::path evalConfig =
+        projectRoot / "config" / "evaluate_default.json";
+
+    const app::GenerateOptions buildOpts =
+        app::parseGenerateOptions({"--config", buildConfig.string()}, 6);
+    require(buildOpts.outputDir == fs::path("library_middle"),
+            "Shipped build_library.json output_dir changed unexpectedly.");
+    require(buildOpts.standardCellCsvPath ==
+                fs::path("resources/standard_cells.csv"),
+            "Shipped build_library.json should use the default cell CSV.");
+    require(buildOpts.activityModeName == "uniform",
+            "Shipped build_library.json should use uniform activity.");
+
+    const app::GenerateOptions buildSmallOpts =
+        app::parseGenerateOptions({"--config", buildSmallConfig.string()}, 6);
+    require(buildSmallOpts.outputDir == fs::path("library_small"),
+            "Shipped build_library_small.json output_dir changed unexpectedly.");
+    require(buildSmallOpts.standardCellCsvPath ==
+                fs::path("resources/standard_cells_small.csv"),
+            "Shipped build_library_small.json should use the small cell CSV.");
+    require(buildSmallOpts.activityModeName == "uniform",
+            "Shipped build_library_small.json should use uniform activity.");
+
+    const app::EvaluationOptions evalOpts =
+        app::parseEvaluationOptions({"--config", evalConfig.string()}, 6);
+    require(evalOpts.benchmarkDir == fs::path("benchmarks"),
+            "Shipped evaluate_default.json benchmark_dir changed unexpectedly.");
+    require(evalOpts.libraryDir == fs::path("results_repo/library_middle"),
+            "Shipped evaluate_default.json library_dir changed unexpectedly.");
+    require(evalOpts.abcLocalLibraryDir.empty(),
+            "Shipped evaluate_default.json should rely on auto-built ABC local library.");
 }
 
 void verifyMemoryBudgetWorkerReduction() {
@@ -257,6 +325,7 @@ int main() {
         fes::verifyConfigParsingAndCliPrecedence();
         fes::verifyInvalidConfigDetection();
         fes::verifyEvaluationConfigParsing();
+        fes::verifyShippedConfigsParse();
         fes::verifyMemoryBudgetWorkerReduction();
         fes::verifyRemovedSynthLibOption();
         fes::verifyOutputPathResolution();

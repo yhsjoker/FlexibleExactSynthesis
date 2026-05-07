@@ -14,7 +14,6 @@ struct EvaluationOptions {
     std::filesystem::path benchmarkDir;
     std::filesystem::path libraryDir;
     std::filesystem::path abcLocalLibraryDir;
-    bool mappedFourWay = false;
     bool verify = false;
     bool help = false;
     ResumePolicy resumePolicy = ResumePolicy::kRunAll;

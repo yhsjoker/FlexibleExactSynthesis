@@ -37,7 +37,6 @@ struct AppContext {
     fs::path projectRoot;
     fs::path resourcesDir;
     fs::path resultsRepoDir;
-    fs::path tmpEvalDir;
 
     fs::path pythonScriptPath;
     fs::path genlibPath;
@@ -96,6 +95,16 @@ fs::path firstExistingPath(const std::vector<fs::path>& candidates) {
     return candidates.empty() ? fs::path() : candidates.front();
 }
 
+void removeDirectoryIfEmpty(const fs::path& path) {
+    std::error_code ec;
+    if (!fs::exists(path, ec) || !fs::is_directory(path, ec)) {
+        return;
+    }
+    if (fs::is_empty(path, ec)) {
+        fs::remove(path, ec);
+    }
+}
+
 fs::path compileTimeProjectRoot() {
     return fs::weakly_canonical(fs::path(FES_PROJECT_ROOT));
 }
@@ -149,11 +158,11 @@ AppContext discoverContext() {
     ctx.projectRoot = compileTimeProjectRoot();
     ctx.resourcesDir = ctx.projectRoot / "resources";
     ctx.resultsRepoDir = ctx.projectRoot / "results_repo";
-    ctx.tmpEvalDir = ctx.resultsRepoDir / "tmp_eval";
 
     fs::create_directories(ctx.resourcesDir);
     fs::create_directories(ctx.resultsRepoDir);
-    fs::create_directories(ctx.tmpEvalDir);
+    removeDirectoryIfEmpty(ctx.resultsRepoDir / "tmp_eval");
+    removeDirectoryIfEmpty(ctx.projectRoot / "tmp_eval");
 
     ctx.pythonScriptPath = ctx.projectRoot / "scripts" / "single_power_run.py";
     ctx.genlibPath = firstExistingPath({
@@ -192,6 +201,10 @@ fs::path findLatestGeneratedLibraryDir(const fs::path& resultsRepoDir) {
 
         const fs::path candidate = entry.path();
         if (candidate.filename() == "local_abc_lib") {
+            continue;
+        }
+        if (candidate.filename().string().find("_abc_local") !=
+            std::string::npos) {
             continue;
         }
         if (!fs::exists(candidate / "final_results.csv")) {
@@ -256,16 +269,15 @@ void printGenerateHelp(const AppContext& ctx) {
 void printOptimizeHelp(const AppContext& ctx) {
     std::cout
         << "Usage: fes_app optimize|evaluate|benchmark [options]\n\n"
-        << "Run the existing PONO tournament optimization flow on a benchmark set.\n\n"
+        << "Run the unified four-method physical-validation flow on a benchmark set.\n\n"
         << "Options:\n"
         << "  --config <file>     JSON config file. CLI flags override config values\n"
         << "  --path <dir>        Benchmark directory to optimize\n"
         << "                      (default: " << ctx.defaultBenchmarkDir.string() << ")\n"
         << "  --lib <dir>         Generated library directory to use\n"
         << "                      (default: newest results_repo/* with detailed_infos)\n"
-        << "  --mapped-four-way   Run mapped-origin four-way validation\n"
         << "  --abc-local-lib <dir>\n"
-        << "                      ABC local-library directory for mapped-four-way mode\n"
+        << "                      ABC local-library directory for the merged four-method flow\n"
         << "  --resume, --skip-completed, --rerun <failed|timeout>\n"
         << "                      Apply evaluator-level per-benchmark resume/rerun\n"
         << "  --case-timeout-ms <int>\n"
@@ -284,7 +296,7 @@ void printGeneralHelp(const AppContext& ctx) {
         << "  fes_app help [generate|optimize|evaluate|benchmark]\n\n"
         << "Commands:\n"
         << "  generate   Build a sub-circuit library using exhaustive or benchmark mode\n"
-        << "  optimize   Run the tournament-based PONO optimization flow on benchmarks\n"
+        << "  optimize   Run the unified four-method physical-validation flow\n"
         << "  evaluate   Alias for optimize with config-friendly naming\n"
         << "  benchmark  Alias for optimize/physical validation workflows\n\n"
         << "Compatibility:\n"
@@ -477,6 +489,39 @@ int runOptimizeCommand(const AppContext& ctx, EvaluationOptions opts) {
     requireFile(opts.libraryDir / "final_results.csv", "Library index");
     requireDirectory(opts.libraryDir / "detailed_infos", "Library detailed_infos");
 
+    if (opts.abcLocalLibraryDir.empty()) {
+        opts.abcLocalLibraryDir =
+            opts.libraryDir.parent_path() /
+            (opts.libraryDir.filename().string() + "_abc_local");
+    } else {
+        opts.abcLocalLibraryDir =
+            resolveProjectPath(runCtx, opts.abcLocalLibraryDir);
+    }
+
+    const bool haveAbcLocalLib =
+        fs::exists(opts.abcLocalLibraryDir / "final_results.csv") &&
+        fs::exists(opts.abcLocalLibraryDir / "detailed_infos");
+    if (!haveAbcLocalLib) {
+        std::cout << "[Optimize] Building ABC local library: "
+                  << fs::absolute(opts.abcLocalLibraryDir) << "\n";
+        SynthesisFlow abcLocalBuilder(
+            {},
+            runCtx.abcPath,
+            runCtx.genlibPath.string(),
+            runCtx.pythonScriptPath.string());
+        if (!abcLocalBuilder.buildABCLocalLibraryFromTopCsv(
+                (opts.libraryDir / "final_results.csv").string(),
+                opts.abcLocalLibraryDir.string())) {
+            throw std::runtime_error("ABC local library generation failed.");
+        }
+    }
+
+    requireDirectory(opts.abcLocalLibraryDir, "ABC local library directory");
+    requireFile(opts.abcLocalLibraryDir / "final_results.csv",
+                "ABC local library index");
+    requireDirectory(opts.abcLocalLibraryDir / "detailed_infos",
+                     "ABC local library detailed_infos");
+
     std::cout << "[Optimize] Resources: " << fs::absolute(runCtx.resourcesDir) << "\n";
     std::cout << "[Optimize] Project root: " << fs::absolute(runCtx.projectRoot) << "\n";
     std::cout << "[Optimize] ABC: " << fs::absolute(fs::path(runCtx.abcPath)) << "\n";
@@ -494,41 +539,23 @@ int runOptimizeCommand(const AppContext& ctx, EvaluationOptions opts) {
               << " (best-effort diagnostic for evaluation)\n";
     std::cout << "[Optimize] Tournament mode: aggressive vs conservative PONO rewrite\n";
     std::cout << "[Optimize] Library: " << fs::absolute(opts.libraryDir) << "\n";
+    std::cout << "[Optimize] ABC local library: "
+              << fs::absolute(opts.abcLocalLibraryDir) << "\n";
     std::cout << "[Optimize] Benchmarks: " << fs::absolute(opts.benchmarkDir) << "\n";
 
-    if (opts.mappedFourWay) {
-        if (opts.abcLocalLibraryDir.empty()) {
-            throw std::runtime_error(
-                "--mapped-four-way requires --abc-local-lib or config evaluate.abc_local_library_dir.");
-        }
-        opts.abcLocalLibraryDir =
-            resolveProjectPath(runCtx, opts.abcLocalLibraryDir);
-        InnovusBatchEvaluator mappedEvaluator(
-            opts.libraryDir.string(),
-            opts.abcLocalLibraryDir.string(),
-            runCtx.pythonScriptPath.string(),
-            runCtx.abcPath);
-        mappedEvaluator.enableVerification(opts.verify);
-        mappedEvaluator.setResumePolicy(opts.resumePolicy);
-        mappedEvaluator.setCaseTimeoutMs(opts.caseTimeoutMs);
-        mappedEvaluator.runBatchVerificationMappedFourWay(opts.benchmarkDir.string());
-    } else {
-        InnovusBatchEvaluator evaluator(
-            opts.libraryDir.string(),
-            runCtx.pythonScriptPath.string(),
-            runCtx.abcPath);
-        evaluator.enableVerification(opts.verify);
-        evaluator.setResumePolicy(opts.resumePolicy);
-        evaluator.setCaseTimeoutMs(opts.caseTimeoutMs);
-        evaluator.runBatchVerification(opts.benchmarkDir.string());
-    }
+    InnovusBatchEvaluator evaluator(
+        opts.libraryDir.string(),
+        opts.abcLocalLibraryDir.string(),
+        runCtx.pythonScriptPath.string(),
+        runCtx.abcPath);
+    evaluator.enableVerification(opts.verify);
+    evaluator.setResumePolicy(opts.resumePolicy);
+    evaluator.setCaseTimeoutMs(opts.caseTimeoutMs);
+    evaluator.runBatchVerification(opts.benchmarkDir.string());
 
     std::cout << "[Optimize] Completed.\n";
     std::cout << "[Optimize] Validation CSV: "
-              << fs::absolute(
-                     opts.libraryDir /
-                     (opts.mappedFourWay ? "ppa_mapped_four_way_validation.csv"
-                                         : "ppa_complete_validation.csv"))
+              << fs::absolute(opts.libraryDir / "ppa_complete_validation.csv")
               << "\n";
     return 0;
 }

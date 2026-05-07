@@ -118,6 +118,28 @@ std::map<std::string, GeneratedLibraryCsvEntry> loadGeneratedLibraryRows(
     return rows;
 }
 
+void removeFileIfExists(const fs::path& path) {
+    std::error_code ec;
+    fs::remove(path, ec);
+}
+
+void removeDirectoryTree(const fs::path& path) {
+    std::error_code ec;
+    if (fs::exists(path, ec)) {
+        fs::remove_all(path, ec);
+    }
+}
+
+void removeDirectoryIfEmpty(const fs::path& path) {
+    std::error_code ec;
+    if (!fs::exists(path, ec) || !fs::is_directory(path, ec)) {
+        return;
+    }
+    if (fs::is_empty(path, ec)) {
+        fs::remove(path, ec);
+    }
+}
+
 bool textContainsTimeout(std::string text) {
     std::transform(
         text.begin(),
@@ -490,6 +512,7 @@ SynthesisResult SynthesisFlow::run(const std::string& hexFunc,
                 verifier_.getPPAResult(baselineBlif.string(), inputProbs, acts));
             res.optStats = convertPpaToAbcStats(
                 verifier_.getPPAResult(ponoBlif.string(), inputProbs, acts));
+            removeFileIfExists(baselineBlif);
             res.success = res.baselineStats.valid && res.optStats.valid;
             if (!res.success) {
                 res.errorMsg = "Innovus evaluation failed";
@@ -535,6 +558,7 @@ void SynthesisFlow::runBatch(const std::string& inputFile,
 }
 
 bool SynthesisFlow::runBatch(const LibraryGenerationConfig& cfg) {
+    const fs::path scratchDir = fs::path(cfg.outputDir) / "tmp_eval";
     try {
         const auto loadedCells =
             maybeLoadStandardCells(libPath_, cfg.outputDir, cfg.lutInputs);
@@ -559,6 +583,7 @@ bool SynthesisFlow::runBatch(const LibraryGenerationConfig& cfg) {
 
         if (functions.empty()) {
             std::cerr << "[Batch] No functions selected.\n";
+            removeDirectoryTree(scratchDir);
             return false;
         }
 
@@ -569,7 +594,7 @@ bool SynthesisFlow::runBatch(const LibraryGenerationConfig& cfg) {
 
         fs::create_directories(cfg.outputDir);
         fs::create_directories(fs::path(cfg.outputDir) / "detailed_infos");
-        fs::create_directories(fs::path(cfg.outputDir) / "tmp_eval");
+        fs::create_directories(scratchDir);
 
         RunManifest manifest(fs::path(cfg.outputDir) / "run_manifest.csv");
         manifest.load();
@@ -738,6 +763,7 @@ bool SynthesisFlow::runBatch(const LibraryGenerationConfig& cfg) {
         if (!out.is_open()) {
             std::cerr << "[Batch] Failed to open output CSV: "
                       << cfg.outputCsv << "\n";
+            removeDirectoryTree(scratchDir);
             return false;
         }
 
@@ -772,9 +798,11 @@ bool SynthesisFlow::runBatch(const LibraryGenerationConfig& cfg) {
                   << ", Timeout=" << timeoutCount.load()
                   << ", Skipped=" << skippedCount.load()
                   << ", CSV=" << cfg.outputCsv << "\n";
+        removeDirectoryTree(scratchDir);
         return successCount.load() > 0 || skippedCount.load() > 0;
     } catch (const std::exception& e) {
         std::cerr << "[Batch] Exception: " << e.what() << "\n";
+        removeDirectoryTree(scratchDir);
         return false;
     }
 }
@@ -786,9 +814,11 @@ bool SynthesisFlow::generateLibrary(const LibraryGenerationConfig& cfg) {
 bool SynthesisFlow::buildABCLocalLibraryFromTopCsv(
     const std::string& topCsvPath,
     const std::string& outputDir) {
+    const fs::path scratchDir = fs::path(outputDir) / "tmp_eval";
     auto functions = loadTopHexFuncsFromCsv(topCsvPath, kLutMaxInputs);
     if (functions.empty()) {
         std::cerr << "[ABC-LIB] No functions loaded from " << topCsvPath << "\n";
+        removeDirectoryTree(scratchDir);
         return false;
     }
 
@@ -801,7 +831,7 @@ bool SynthesisFlow::buildABCLocalLibraryFromTopCsv(
 
     fs::create_directories(outputDir);
     fs::create_directories(fs::path(outputDir) / "detailed_infos");
-    fs::create_directories(fs::path(outputDir) / "tmp_eval");
+    fs::create_directories(scratchDir);
 
     GeneratedLibrary m_library;
     std::mutex libraryMutex;
@@ -880,6 +910,7 @@ bool SynthesisFlow::buildABCLocalLibraryFromTopCsv(
     std::ofstream csvOut(csvPath);
     if (!csvOut.is_open()) {
         std::cerr << "[ABC-LIB] Failed to create " << csvPath << "\n";
+        removeDirectoryTree(scratchDir);
         return false;
     }
 
@@ -891,6 +922,7 @@ bool SynthesisFlow::buildABCLocalLibraryFromTopCsv(
     std::cout << "[ABC-LIB] Done. Success=" << successCases.load()
               << "/" << totalCases.load()
               << ", CSV=" << csvPath << "\n";
+    removeDirectoryTree(scratchDir);
     return successCases.load() > 0;
 }
 
@@ -1080,7 +1112,10 @@ AbcStats SynthesisFlow::runAbcBaseline(const std::string& hexFunc, int numInputs
         std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id()));
     const fs::path mappedPath = scratchDir / ("baseline_" + threadTag + ".blif");
     runAbcToGenerateBaseline(hexFunc, numInputs, mappedPath.string());
-    return evaluateBlif(mappedPath.string());
+    const AbcStats stats = evaluateBlif(mappedPath.string());
+    removeFileIfExists(mappedPath);
+    removeDirectoryIfEmpty(scratchDir);
+    return stats;
 }
 
 bool SynthesisFlow::verify(const std::string& hexFunc,
@@ -1414,6 +1449,11 @@ bool SynthesisFlow::runSingleABCLocalCase(
     const fs::path logPath =
         tmpBlif.parent_path() / (tmpBlif.stem().string() + ".log");
     const fs::path finalBlif = funcDir / ("abc_" + variantName + ".blif");
+    const auto cleanupScratch = [&]() {
+        removeFileIfExists(rawBlif);
+        removeFileIfExists(tmpBlif);
+        removeFileIfExists(logPath);
+    };
 
     {
         std::ofstream rawStream(rawBlif);
@@ -1422,6 +1462,7 @@ bool SynthesisFlow::runSingleABCLocalCase(
                 *csvLineOut = func.hexFunc + "," + probTag +
                               ",false,-1,-1,0,Raw BLIF Write Failed\n";
             }
+            cleanupScratch();
             return false;
         }
         rawStream << buildRawBlifFromHexFunc(func.hexFunc, func.numInputs);
@@ -1458,6 +1499,7 @@ bool SynthesisFlow::runSingleABCLocalCase(
 
     if (ret != 0 || !fs::exists(tmpBlif)) {
         emitRow(false, -1, -1.0, "ABC Failed");
+        cleanupScratch();
         return false;
     }
 
@@ -1468,12 +1510,14 @@ bool SynthesisFlow::runSingleABCLocalCase(
 
     if (!validateBlifImplementsHex(blifContent, func.hexFunc, func.numInputs)) {
         emitRow(false, -1, -1.0, "HexMismatch");
+        cleanupScratch();
         return false;
     }
 
     fs::copy_file(tmpBlif, finalBlif, fs::copy_options::overwrite_existing);
     const int gates = countNamesInBlif(finalBlif.string());
     emitRow(true, gates, static_cast<double>(gates), "");
+    cleanupScratch();
     return true;
 }
 

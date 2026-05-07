@@ -10,9 +10,8 @@
     "threads": 1
   },
   "evaluate": {
-    "benchmark_dir": "/home/yhs_joker/datasets/benchmarks",
-    "library_dir": "results_repo/library_all_2",
-    "verify": true,
-    "mode": "standard"
+    "benchmark_dir": "benchmarks",
+    "library_dir": "results_repo/library_middle",
+    "verify": true
   }
 }

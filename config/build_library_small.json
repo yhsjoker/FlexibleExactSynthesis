@@ -5,7 +5,7 @@
     "python_script": "scripts/single_power_run.py",
     "genlib_path": "resources/nangate_45nm.genlib",
     "liberty_path": "resources/NangateOpenCellLibrary_typical.lib",
-    "standard_cell_csv": "resources/standard_cells.csv"
+    "standard_cell_csv": "resources/standard_cells_small.csv"
   },
   "run": {
     "resume_policy": "resume",
@@ -18,7 +18,7 @@
     "k": 4,
     "num_functions": 0,
     "function_source": "exhaustive",
-    "output_dir": "library_middle",
+    "output_dir": "library_small",
     "verify": false,
     "timeouts_ms": {
       "sat": 20000,

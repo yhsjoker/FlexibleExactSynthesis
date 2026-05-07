@@ -541,8 +541,6 @@ void applyEvaluationConfig(const JsonValue& root, EvaluationOptions* opts) {
     opts->libraryDir = getPath(*evaluation, "library_dir");
     opts->abcLocalLibraryDir = getPath(*evaluation, "abc_local_library_dir");
     opts->verify = getBool(*evaluation, "verify", opts->verify);
-    opts->mappedFourWay =
-        getString(*evaluation, "mode", "standard") == "mapped_four_way";
     opts->caseTimeoutMs =
         getInt(*evaluation, "case_timeout_ms", opts->caseTimeoutMs);
     if (const JsonValue* timeouts = findObjectMember(*evaluation, "timeouts_ms")) {
@@ -601,10 +599,6 @@ void applyEvaluationOverrides(const std::vector<std::string>& args,
         }
         if (arg == "--verify") {
             opts->verify = true;
-            continue;
-        }
-        if (arg == "--mapped-four-way") {
-            opts->mappedFourWay = true;
             continue;
         }
         if (arg == "--resume") {
