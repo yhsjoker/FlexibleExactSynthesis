@@ -200,12 +200,12 @@ def main():
         sftp = ssh.open_sftp()
         sftp.put(local_blif_path, f"{VM_WORK_DIR}/{filename}")
         sftp.put(local_tcl_path, f"{VM_WORK_DIR}/{module_name}.act.tcl")
-        local_run_job = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run_job.sh")
-        sftp.put(local_run_job, f"{VM_WORK_DIR}/run_job.sh")
+        local_run_job = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run_job.sh.bak")
+        sftp.put(local_run_job, f"{VM_WORK_DIR}/run_job.sh.bak")
         sftp.close()
 
         # 🚀 包装 bash -c 以确保环境变量 (如 Innovus 路径) 生效
-        run_cmd = f"bash -c 'chmod +x {VM_WORK_DIR}/run_job.sh && {VM_WORK_DIR}/run_job.sh {module_name}'"
+        run_cmd = f"bash -c 'chmod +x {VM_WORK_DIR}/run_job.sh.bak && {VM_WORK_DIR}/run_job.sh.bak {module_name}'"
         stdin, stdout, stderr = ssh.exec_command(run_cmd, get_pty=True)
         
         for line in iter(stdout.readline, ""):

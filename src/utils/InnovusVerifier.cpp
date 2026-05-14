@@ -71,8 +71,8 @@ PPAResult InnovusVerifier::getPPAResult(const std::string& blifFilePath,
         result.valid = false;
     }
 
-    // 7. 清理临时文件 (建议开启，调试时可注释掉)
-    // std::remove(actFilePath.c_str());
+    // 7. 清理临时文件
+    std::remove(actFilePath.c_str());
 
     return result;
 }

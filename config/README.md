@@ -7,11 +7,14 @@ commas to runnable `.json` files.
 
 - Absolute paths are used as-is.
 - Relative paths in JSON are resolved from the project root.
-- The only exception is `generate.output_dir`: when it is relative, it is
-  resolved under `<project_root>/results_repo`.
-- Relative `library_dir` values such as `results_repo/library_middle` are still
-  treated as project-root-relative paths, so they resolve to
-  `<project_root>/results_repo/library_middle`.
+- The exceptions are:
+  `generate.output_dir`, `evaluate.library_dir`,
+  `evaluate.abc_local_library_dir`, `evaluate.output_dir`,
+  `optimize_blif.library_dir`, `optimize_blif.abc_local_library_dir`,
+  `optimize_blif.output_dir`, `evaluate_blif.library_dir`,
+  `evaluate_blif.abc_local_library_dir`, and `evaluate_blif.output_dir`.
+  When any of those are relative, they are resolved under
+  `<project_root>/results_repo`.
 - Paths are not resolved relative to the current shell directory or the config
   file directory.
 
@@ -21,7 +24,9 @@ commas to runnable `.json` files.
 | --- | --- | --- |
 | `build_library.json` | `generate` | Primary K=4 exhaustive build using the default standard-cell set in `resources/standard_cells.csv`. Activity mode is `uniform`, so each library function gets the standard `(0.1,0.1,0.1,0.1)` through `(0.9,0.9,0.9,0.9)` sweep. Output goes to `results_repo/library_middle`. |
 | `build_library_small.json` | `generate` | Faster build using the reduced gate set in `resources/standard_cells_small.csv`. Useful for quick bring-up or experiments. Output goes to `results_repo/library_small`. |
-| `evaluate_default.json` | `evaluate` | Unified four-method physical evaluation: `Original / ABC Global / ABC Local / PONO`. By default, if `evaluate.abc_local_library_dir` is omitted, the app auto-builds `<library_dir>_abc_local` before evaluation. |
+| `evaluate_default.json` | `evaluate` | Unified four-method physical evaluation: `Original / ABC Global / ABC Local / PONO`. Results are written to a dedicated evaluation output directory. If `evaluate.abc_local_library_dir` is omitted, the app auto-builds `<library_dir>_abc_local` before evaluation. |
+| `optimize_blif.json` | `optimize-blif` | Single-BLIF optimization example. Exports `result.json` plus `optimized.blif` under the configured output directory. |
+| `evaluate_blif.json` | `evaluate-blif` | Single-BLIF evaluation example with explicit input probabilities. Useful as a backend-facing template. |
 
 ## Typical Usage
 
@@ -43,9 +48,38 @@ Run the merged evaluation flow:
 ./build/fes_app evaluate --config config/evaluate_default.json
 ```
 
-`evaluate_default.json` ships with `benchmark_dir: "benchmarks"` as a portable
-project-root-relative placeholder. Replace it with your actual benchmark
-directory before running a full evaluation job.
+Optimize one BLIF:
+
+```bash
+./build/fes_app optimize-blif --config config/optimize_blif.json
+```
+
+Optimize one BLIF with machine-readable stdout:
+
+```bash
+./build/fes_app optimize-blif --config config/optimize_blif.json --json
+```
+
+Evaluate one BLIF:
+
+```bash
+./build/fes_app evaluate-blif --config config/evaluate_blif.json
+```
+
+Validate a config without running it:
+
+```bash
+./build/fes_app validate-config --config config/evaluate_default.json
+```
+
+Check environment dependencies:
+
+```bash
+./build/fes_app doctor
+```
+
+The shipped single-BLIF configs use placeholder `blif_path` values. Replace
+them with your actual target netlist before execution.
 
 ## Common Parameters
 
@@ -65,9 +99,18 @@ directory before running a full evaluation job.
 | `generate.activity.mode` | generate | `uniform`, `cartesian`, or `explicit`. |
 | `generate.activity.levels` | generate | Activity levels for `uniform` or `cartesian`. Omit for the default uniform sweep. |
 | `generate.activity.explicit` | generate | Explicit activity vectors. |
-| `evaluate.library_dir` | evaluate | Main PONO library directory. Relative values are project-root-relative. |
-| `evaluate.abc_local_library_dir` | evaluate | Optional ABC local-library directory. If omitted, the evaluator auto-builds `<library_dir>_abc_local`. |
+| `evaluate.library_dir` | evaluate | Main PONO library directory. Relative values are rooted under `results_repo`. |
+| `evaluate.abc_local_library_dir` | evaluate | Optional ABC local-library directory. If omitted, the evaluator auto-builds `<library_dir>_abc_local`. Relative values are rooted under `results_repo`. |
+| `evaluate.output_dir` | evaluate | Output directory for `ppa_complete_validation.csv`, `evaluation_cases.csv`, and `evaluation_summary.json`. Relative values are rooted under `results_repo`. |
 | `evaluate.verify` | evaluate | Enable rewrite-time combinational equivalence checking. |
+| `optimize_blif.blif_path` / `evaluate_blif.blif_path` | single-BLIF flows | Input netlist to analyze. Relative values are project-root-relative. |
+| `optimize_blif.input_probs` / `evaluate_blif.input_probs` | single-BLIF flows | Required input probabilities, ordered exactly as `.inputs` appears in the BLIF. |
+| `optimize_blif.input_acts` / `evaluate_blif.input_acts` | single-BLIF flows | Optional input activities. If omitted on the CLI, the tool derives `2*p*(1-p)` for each input. |
+| `optimize_blif.json_stdout` / `evaluate_blif.json_stdout` | single-BLIF flows | When `true`, print only the final result JSON to stdout and write captured execution logs to `<output_dir>/stdout.log` and `<output_dir>/stderr.log`. Passing CLI `--json` is the recommended backend-facing way to enable it. |
+| `optimize_blif.library_dir` / `evaluate_blif.library_dir` | single-BLIF flows | Main PONO library directory. Relative values are rooted under `results_repo`. |
+| `optimize_blif.abc_local_library_dir` / `evaluate_blif.abc_local_library_dir` | single-BLIF flows | Optional ABC local-library directory. Relative values are rooted under `results_repo`. |
+| `optimize_blif.output_dir` / `evaluate_blif.output_dir` | single-BLIF flows | Output directory for `result.json` and any exported BLIF artifacts. Relative values are rooted under `results_repo`. |
+| `optimize_blif.emit_blif_content` | `optimize-blif` | When `true`, embed the optimized BLIF text directly into `result.json`. |
 
 Legacy flat timeout keys and legacy `tools.*` dependency keys are still parsed
 for compatibility, but new configs should prefer the grouped keys above.

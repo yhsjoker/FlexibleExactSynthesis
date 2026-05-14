@@ -321,10 +321,17 @@ void writeEvaluationCasesCsv(
 
 InnovusBatchEvaluator::InnovusBatchEvaluator(const std::string& lib, const std::string& py, const std::string& abc)
     : libPath_(lib), verifier_(py), abcPath_(abc) {
-    workDir_ = std::filesystem::path(libPath_) / "tmp_eval";
+    outputRootPath_ = std::filesystem::path(libPath_);
+    workDir_ = outputRootPath_ / "tmp_eval";
     std::filesystem::create_directories(workDir_);
     cec_ = std::make_unique<EquivalenceChecker>(cecLibrary_);
     loadOptimizationLibrary();
+}
+
+void InnovusBatchEvaluator::setOutputRootDir(const std::filesystem::path& outputRoot) {
+    outputRootPath_ = outputRoot.empty() ? std::filesystem::path(libPath_)
+                                         : outputRoot;
+    workDir_ = outputRootPath_ / "tmp_eval";
 }
 
 std::vector<std::string> InnovusBatchEvaluator::findBlifFilesRecursive(const std::filesystem::path& folderPath) {
@@ -384,7 +391,8 @@ void InnovusBatchEvaluator::runBatchVerification(const std::string& benchmarksDi
     auto files = findBlifFilesRecursive(benchmarksDir);
     std::vector<EvaluationCaseRecord> caseRecords;
 
-    const fs::path outputRoot = fs::path(libPath_);
+    const fs::path outputRoot =
+        outputRootPath_.empty() ? fs::path(libPath_) : outputRootPath_;
     const fs::path validationCsv = outputRoot / "ppa_complete_validation.csv";
     const fs::path manifestCsv = outputRoot / "evaluation_manifest.csv";
     const fs::path casesCsv = outputRoot / "evaluation_cases.csv";
@@ -613,6 +621,140 @@ void InnovusBatchEvaluator::runBatchVerification(const std::string& benchmarksDi
     writeEvaluationCasesCsv(casesCsv, caseRecords);
     writeEvaluationSummaryJson(summaryJson, summary, casesCsv, validationCsv);
     removeDirectoryTree(workDir_);
+}
+
+SingleBlifResult InnovusBatchEvaluator::analyzeSingleBlif(
+    const std::string& inputBlifPath,
+    const std::vector<double>& inputProbs,
+    const std::vector<double>& inputActs,
+    const std::filesystem::path& optimizedBlifOutputPath,
+    bool includeOptimizedBlifContent) {
+    namespace fs = std::filesystem;
+
+    SingleBlifResult result;
+    result.sourceBlifPath = inputBlifPath;
+    result.inputProbs = inputProbs;
+    result.inputActs = inputActs;
+
+    const auto cleanupWorkDir = [&]() {
+        removeDirectoryTree(workDir_);
+    };
+    const auto readWholeFile = [](const fs::path& path) {
+        std::ifstream input(path);
+        if (!input.is_open()) {
+            return std::string{};
+        }
+        return std::string((std::istreambuf_iterator<char>(input)),
+                           std::istreambuf_iterator<char>());
+    };
+
+    const auto start = std::chrono::steady_clock::now();
+    try {
+        if (inputBlifPath.empty() || !fs::exists(inputBlifPath)) {
+            result.errorMessage = "Input BLIF file not found.";
+        } else if (inputProbs.empty()) {
+            result.errorMessage = "inputProbs must not be empty.";
+        } else if (inputProbs.size() != inputActs.size()) {
+            result.errorMessage =
+                "inputProbs and inputActs must have the same length.";
+        } else {
+            fs::create_directories(workDir_);
+
+            result.origPPA = verifier_.getPPAResult(inputBlifPath, inputProbs, inputActs);
+
+            std::string abcHighBlif;
+            if (result.origPPA.valid) {
+                abcHighBlif = runABCExhaustiveOpt(inputBlifPath);
+                if (!abcHighBlif.empty() && fs::exists(abcHighBlif)) {
+                    result.abcHighPPA =
+                        verifier_.getPPAResult(abcHighBlif, inputProbs, inputActs);
+                }
+
+                const std::string mappedOrigin = run4LutMappingOnly(inputBlifPath);
+                if (!mappedOrigin.empty() && fs::exists(mappedOrigin)) {
+                    const std::string abcLocalBlif =
+                        rewriteMappedBlifWithABCLibrarySimple(mappedOrigin, inputProbs);
+                    if (!abcLocalBlif.empty() && fs::exists(abcLocalBlif)) {
+                        result.abcLocalPPA =
+                            verifier_.getPPAResult(abcLocalBlif, inputProbs, inputActs);
+                    }
+                }
+
+                const std::string ponoAggBlif =
+                    rewriteBlifWithLibrary(inputBlifPath, inputProbs, true);
+                PPAResult aggPPA;
+                if (!ponoAggBlif.empty() && fs::exists(ponoAggBlif)) {
+                    aggPPA = verifier_.getPPAResult(
+                        ponoAggBlif, inputProbs, inputActs);
+                }
+
+                const std::string ponoConsBlif =
+                    rewriteBlifWithLibrary(inputBlifPath, inputProbs, false);
+                PPAResult consPPA;
+                if (!ponoConsBlif.empty() && fs::exists(ponoConsBlif)) {
+                    consPPA = verifier_.getPPAResult(
+                        ponoConsBlif, inputProbs, inputActs);
+                }
+
+                std::string winningBlifPath;
+                double pAgg = aggPPA.valid ? aggPPA.power_total : 1e18;
+                double pCons = consPPA.valid ? consPPA.power_total : 1e18;
+                if (aggPPA.valid || consPPA.valid) {
+                    if (pAgg <= pCons) {
+                        result.ponoPPA = aggPPA;
+                        result.selectedStrategy = "Aggressive";
+                        winningBlifPath = ponoAggBlif;
+                    } else {
+                        result.ponoPPA = consPPA;
+                        result.selectedStrategy = "Conservative";
+                        winningBlifPath = ponoConsBlif;
+                    }
+                }
+
+                if (!winningBlifPath.empty() && fs::exists(winningBlifPath)) {
+                    if (!optimizedBlifOutputPath.empty()) {
+                        if (optimizedBlifOutputPath.has_parent_path()) {
+                            fs::create_directories(
+                                optimizedBlifOutputPath.parent_path());
+                        }
+                        fs::copy_file(winningBlifPath,
+                                      optimizedBlifOutputPath,
+                                      fs::copy_options::overwrite_existing);
+                        result.optimizedBlifPath =
+                            fs::absolute(optimizedBlifOutputPath).string();
+                    }
+                    if (includeOptimizedBlifContent) {
+                        const fs::path contentPath = optimizedBlifOutputPath.empty()
+                                                         ? fs::path(winningBlifPath)
+                                                         : optimizedBlifOutputPath;
+                        result.optimizedBlifContent = readWholeFile(contentPath);
+                    }
+                }
+            }
+
+            result.success = result.origPPA.valid && result.abcHighPPA.valid &&
+                             result.abcLocalPPA.valid && result.ponoPPA.valid;
+            if (!result.success && result.errorMessage.empty()) {
+                PPADiff diff;
+                diff.origPPA = result.origPPA;
+                diff.abcHighPPA = result.abcHighPPA;
+                diff.abcLocalPPA = result.abcLocalPPA;
+                diff.ponoPPA = result.ponoPPA;
+                diff.success = false;
+                result.errorMessage = standardFailureReason(diff);
+            }
+        }
+    } catch (const std::exception& e) {
+        if (result.errorMessage.empty()) {
+            result.errorMessage = e.what();
+        }
+    }
+
+    const auto end = std::chrono::steady_clock::now();
+    result.runtimeMs =
+        std::chrono::duration<double, std::milli>(end - start).count();
+    cleanupWorkDir();
+    return result;
 }
 
 void InnovusBatchEvaluator::loadOptimizationLibrary() {
@@ -1592,7 +1734,8 @@ fes::InnovusBatchEvaluator::InnovusBatchEvaluator(
       abcLocalLibPath_(abcLocalLib),
       abcPath_(abc),
       verifier_(py) {
-    workDir_ = std::filesystem::path(libPath_) / "tmp_eval";
+    outputRootPath_ = std::filesystem::path(libPath_);
+    workDir_ = outputRootPath_ / "tmp_eval";
     std::filesystem::create_directories(workDir_);
     cec_ = std::make_unique<EquivalenceChecker>(cecLibrary_);
     loadOptimizationLibrary();

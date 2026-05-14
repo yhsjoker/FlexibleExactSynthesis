@@ -370,6 +370,69 @@ std::vector<std::vector<double>> parseExplicitArray(const JsonValue& value,
     return patterns;
 }
 
+std::vector<double> normalizeProbabilityVector(std::vector<double> values,
+                                               const std::string& key) {
+    for (double& value : values) {
+        value = ActivityPatternGenerator::stableActivityValue(value);
+    }
+    return values;
+}
+
+std::vector<double> parseCsvNumberList(const std::string& text,
+                                       const std::string& key) {
+    std::stringstream input(text);
+    std::string token;
+    std::vector<double> values;
+    while (std::getline(input, token, ',')) {
+        std::string trimmed = token;
+        trimmed.erase(trimmed.begin(),
+                      std::find_if(trimmed.begin(), trimmed.end(), [](unsigned char c) {
+                          return !std::isspace(c);
+                      }));
+        trimmed.erase(
+            std::find_if(trimmed.rbegin(), trimmed.rend(), [](unsigned char c) {
+                return !std::isspace(c);
+            }).base(),
+            trimmed.end());
+        if (trimmed.empty()) {
+            throw std::runtime_error(key + " contains an empty value.");
+        }
+        try {
+            values.push_back(std::stod(trimmed));
+        } catch (...) {
+            throw std::runtime_error("Invalid numeric value for " + key + ": " +
+                                     trimmed);
+        }
+    }
+    if (values.empty()) {
+        throw std::runtime_error(key + " must contain at least one number.");
+    }
+    return normalizeProbabilityVector(std::move(values), key);
+}
+
+std::vector<double> getNumberList(const JsonValue& object,
+                                  const std::string& key,
+                                  const std::vector<double>& defaultValue = {}) {
+    const JsonValue* value = findMember(object, key);
+    if (value == nullptr) {
+        return defaultValue;
+    }
+    if (value->isArray()) {
+        return normalizeProbabilityVector(parseNumberArray(*value, key), key);
+    }
+    if (value->isString()) {
+        return parseCsvNumberList(value->stringValue, key);
+    }
+    throw std::runtime_error("Config key must be a number array or CSV string: " +
+                             key);
+}
+
+std::string normalizeConfigCommandName(std::string command) {
+    command = toLowerCopy(std::move(command));
+    std::replace(command.begin(), command.end(), '_', '-');
+    return command;
+}
+
 void applyRunConfig(const JsonValue& root, GenerateOptions* opts) {
     const JsonValue* run = findMember(root, "run");
     if (run == nullptr) {
@@ -429,6 +492,18 @@ void applyToolConfig(const JsonValue& root, EvaluationOptions* opts) {
     assignPathIfPresent(*tools, "python_script", &opts->pythonScriptPath);
 }
 
+void applyToolConfig(const JsonValue& root, SingleBlifOptions* opts) {
+    const JsonValue* tools = findMember(root, "tools");
+    if (tools == nullptr) {
+        return;
+    }
+    if (!tools->isObject()) {
+        throw std::runtime_error("Config key must be an object: tools");
+    }
+    assignStringIfPresent(*tools, "abc_path", &opts->abcPath);
+    assignPathIfPresent(*tools, "python_script", &opts->pythonScriptPath);
+}
+
 void applyDependencyConfig(const JsonValue& root, GenerateOptions* opts) {
     const JsonValue* dependencies = findMember(root, "dependencies");
     if (dependencies == nullptr) {
@@ -445,6 +520,18 @@ void applyDependencyConfig(const JsonValue& root, GenerateOptions* opts) {
 }
 
 void applyDependencyConfig(const JsonValue& root, EvaluationOptions* opts) {
+    const JsonValue* dependencies = findMember(root, "dependencies");
+    if (dependencies == nullptr) {
+        return;
+    }
+    if (!dependencies->isObject()) {
+        throw std::runtime_error("Config key must be an object: dependencies");
+    }
+    assignStringIfPresent(*dependencies, "abc_path", &opts->abcPath);
+    assignPathIfPresent(*dependencies, "python_script", &opts->pythonScriptPath);
+}
+
+void applyDependencyConfig(const JsonValue& root, SingleBlifOptions* opts) {
     const JsonValue* dependencies = findMember(root, "dependencies");
     if (dependencies == nullptr) {
         return;
@@ -540,6 +627,7 @@ void applyEvaluationConfig(const JsonValue& root, EvaluationOptions* opts) {
     opts->benchmarkDir = getPath(*evaluation, "benchmark_dir");
     opts->libraryDir = getPath(*evaluation, "library_dir");
     opts->abcLocalLibraryDir = getPath(*evaluation, "abc_local_library_dir");
+    opts->outputDir = getPath(*evaluation, "output_dir");
     opts->verify = getBool(*evaluation, "verify", opts->verify);
     opts->caseTimeoutMs =
         getInt(*evaluation, "case_timeout_ms", opts->caseTimeoutMs);
@@ -550,6 +638,35 @@ void applyEvaluationConfig(const JsonValue& root, EvaluationOptions* opts) {
         throw std::runtime_error(
             "evaluate.case_timeout_ms must be non-negative.");
     }
+}
+
+void applySingleBlifConfig(const JsonValue& root,
+                           const std::string& sectionName,
+                           SingleBlifOptions* opts) {
+    const JsonValue* section = findMember(root, sectionName);
+    if (section == nullptr) {
+        section = findMember(root, "single_blif");
+    }
+    if (section == nullptr) {
+        return;
+    }
+    if (!section->isObject()) {
+        throw std::runtime_error("Config key must be an object: " + sectionName);
+    }
+
+    opts->blifPath = getPath(*section, "blif_path");
+    opts->libraryDir = getPath(*section, "library_dir");
+    opts->abcLocalLibraryDir = getPath(*section, "abc_local_library_dir");
+    opts->outputDir = getPath(*section, "output_dir");
+    opts->resultJsonPath = getPath(*section, "result_json");
+    opts->inputProbs =
+        getNumberList(*section, "input_probs", opts->inputProbs);
+    opts->inputActs =
+        getNumberList(*section, "input_acts", opts->inputActs);
+    opts->jsonStdout = getBool(*section, "json_stdout", opts->jsonStdout);
+    opts->verify = getBool(*section, "verify", opts->verify);
+    opts->emitBlifContent =
+        getBool(*section, "emit_blif_content", opts->emitBlifContent);
 }
 
 fs::path findConfigPath(const std::vector<std::string>& args) {
@@ -625,6 +742,10 @@ void applyEvaluationOverrides(const std::vector<std::string>& args,
             opts->abcLocalLibraryDir = value;
             continue;
         }
+        if (consumeOption(args, i, "--out", &value)) {
+            opts->outputDir = value;
+            continue;
+        }
         if (consumeOption(args, i, "--rerun", &value)) {
             opts->resumePolicy = resumePolicyFromString("rerun_" + value);
             continue;
@@ -635,6 +756,74 @@ void applyEvaluationOverrides(const std::vector<std::string>& args,
         }
 
         throw std::runtime_error("Unknown evaluate option: " + arg);
+    }
+}
+
+void applySingleBlifOverrides(const std::vector<std::string>& args,
+                              SingleBlifOptions* opts) {
+    for (size_t i = 0; i < args.size(); ++i) {
+        const std::string& arg = args[i];
+        std::string value;
+
+        if (arg == "-h" || arg == "--help") {
+            opts->help = true;
+            continue;
+        }
+        if (arg == "--verify") {
+            opts->verify = true;
+            continue;
+        }
+        if (arg == "--json") {
+            opts->jsonStdout = true;
+            continue;
+        }
+        if (arg == "--emit-blif-content") {
+            opts->emitBlifContent = true;
+            continue;
+        }
+        if (consumeOption(args, i, "--config", &value)) {
+            opts->configPath = value;
+            continue;
+        }
+        if (consumeOption(args, i, "--blif", &value)) {
+            opts->blifPath = value;
+            continue;
+        }
+        if (consumeOption(args, i, "--lib", &value)) {
+            opts->libraryDir = value;
+            continue;
+        }
+        if (consumeOption(args, i, "--abc-local-lib", &value)) {
+            opts->abcLocalLibraryDir = value;
+            continue;
+        }
+        if (consumeOption(args, i, "--out", &value)) {
+            opts->outputDir = value;
+            continue;
+        }
+        if (consumeOption(args, i, "--result-json", &value)) {
+            opts->resultJsonPath = value;
+            continue;
+        }
+        if (consumeOption(args, i, "--input-probs", &value)) {
+            opts->inputProbs = parseCsvNumberList(value, "--input-probs");
+            continue;
+        }
+        if (consumeOption(args, i, "--input-acts", &value)) {
+            opts->inputActs = parseCsvNumberList(value, "--input-acts");
+            continue;
+        }
+
+        throw std::runtime_error("Unknown single-BLIF option: " + arg);
+    }
+}
+
+void validateSingleBlifOptions(const SingleBlifOptions& opts,
+                               const std::string& commandName) {
+    if (!opts.inputActs.empty() &&
+        opts.inputActs.size() != opts.inputProbs.size()) {
+        throw std::runtime_error(
+            commandName + ": input_probs and input_acts must have the same length.");
     }
 }
 
@@ -656,18 +845,26 @@ AppConfig loadAppConfig(const fs::path& configPath, int maxLutInputs) {
     }
 
     AppConfig config;
-    config.command = toLowerCopy(getString(root, "command", ""));
+    config.command = normalizeConfigCommandName(getString(root, "command", ""));
     config.generate.configPath = configPath;
     config.evaluation.configPath = configPath;
+    config.singleOptimize.configPath = configPath;
+    config.singleEvaluate.configPath = configPath;
 
     applyRunConfig(root, &config.generate);
     applyRunConfig(root, &config.evaluation);
     applyToolConfig(root, &config.generate);
     applyToolConfig(root, &config.evaluation);
+    applyToolConfig(root, &config.singleOptimize);
+    applyToolConfig(root, &config.singleEvaluate);
     applyDependencyConfig(root, &config.generate);
     applyDependencyConfig(root, &config.evaluation);
+    applyDependencyConfig(root, &config.singleOptimize);
+    applyDependencyConfig(root, &config.singleEvaluate);
     applyGenerateConfig(root, maxLutInputs, &config.generate);
     applyEvaluationConfig(root, &config.evaluation);
+    applySingleBlifConfig(root, "optimize_blif", &config.singleOptimize);
+    applySingleBlifConfig(root, "evaluate_blif", &config.singleEvaluate);
     return config;
 }
 
@@ -693,6 +890,31 @@ EvaluationOptions parseEvaluationOptions(
     if (opts.caseTimeoutMs < 0) {
         throw std::runtime_error("Timeout values must be non-negative.");
     }
+    return opts;
+}
+
+SingleBlifOptions parseSingleBlifOptions(const std::vector<std::string>& args,
+                                         int maxLutInputs,
+                                         const std::string& commandName) {
+    (void)maxLutInputs;
+    const fs::path configPath = findConfigPath(args);
+    const std::string normalizedCommand =
+        normalizeConfigCommandName(commandName);
+    SingleBlifOptions opts;
+    if (!configPath.empty()) {
+        AppConfig config = loadAppConfig(configPath, maxLutInputs);
+        if (!config.command.empty() && config.command != normalizedCommand) {
+            throw std::runtime_error(
+                "Config command is not compatible with " + normalizedCommand +
+                ": " + config.command);
+        }
+        opts = normalizedCommand == "optimize-blif"
+                   ? config.singleOptimize
+                   : config.singleEvaluate;
+        opts.configPath = configPath;
+    }
+    applySingleBlifOverrides(args, &opts);
+    validateSingleBlifOptions(opts, normalizedCommand);
     return opts;
 }
 

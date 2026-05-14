@@ -29,6 +29,17 @@ void requireThrows(const std::vector<std::string>& args,
     throw std::runtime_error(label + " should fail.");
 }
 
+void requireSingleThrows(const std::vector<std::string>& args,
+                         const std::string& commandName,
+                         const std::string& label) {
+    try {
+        (void)app::parseSingleBlifOptions(args, 6, commandName);
+    } catch (const std::exception&) {
+        return;
+    }
+    throw std::runtime_error(label + " should fail.");
+}
+
 void verifyDefaultUniform() {
     const app::GenerateOptions opts =
         app::parseGenerateOptions({"--mode", "exhaustive"}, 6);
@@ -198,8 +209,9 @@ void verifyEvaluationConfigParsing() {
         "           \"max_total_memory_mb\": 4096},\n"
         "  \"benchmark\": {\n"
         "    \"benchmark_dir\": \"/tmp/benches\",\n"
-        "    \"library_dir\": \"results_repo/lib\",\n"
-        "    \"abc_local_library_dir\": \"results_repo/lib_abc_local\",\n"
+        "    \"library_dir\": \"lib\",\n"
+        "    \"abc_local_library_dir\": \"lib_abc_local\",\n"
+        "    \"output_dir\": \"eval_out\",\n"
         "    \"verify\": true,\n"
         "    \"timeouts_ms\": {\"case\": 700}\n"
         "  }\n"
@@ -209,10 +221,12 @@ void verifyEvaluationConfigParsing() {
         app::parseEvaluationOptions({"--config", path.string()}, 6);
     require(opts.benchmarkDir == fs::path("/tmp/benches"),
             "Evaluation benchmark_dir was not parsed.");
-    require(opts.libraryDir == fs::path("results_repo/lib"),
+    require(opts.libraryDir == fs::path("lib"),
             "Evaluation library_dir was not parsed.");
-    require(opts.abcLocalLibraryDir == fs::path("results_repo/lib_abc_local"),
+    require(opts.abcLocalLibraryDir == fs::path("lib_abc_local"),
             "Evaluation abc_local_library_dir was not parsed.");
+    require(opts.outputDir == fs::path("eval_out"),
+            "Evaluation output_dir was not parsed.");
     require(opts.verify, "Evaluation verify was not parsed.");
     require(opts.abcPath == "/tmp/abc_for_eval",
             "Evaluation dependencies.abc_path was not parsed.");
@@ -226,6 +240,73 @@ void verifyEvaluationConfigParsing() {
     fs::remove(path);
 }
 
+void verifySingleBlifConfigParsing() {
+    const fs::path path =
+        fs::temp_directory_path() / "pono_single_blif_config_test.json";
+    writeTextFile(
+        path,
+        "{\n"
+        "  \"command\": \"optimize_blif\",\n"
+        "  \"dependencies\": {\"abc_path\": \"/tmp/abc_single\"},\n"
+        "  \"optimize_blif\": {\n"
+        "    \"blif_path\": \"inputs/design.blif\",\n"
+        "    \"library_dir\": \"lib\",\n"
+        "    \"abc_local_library_dir\": \"lib_abc_local\",\n"
+        "    \"output_dir\": \"single_out\",\n"
+        "    \"result_json\": \"results_repo/single_out/custom.json\",\n"
+        "    \"input_probs\": [0.1, 0.2, 0.3, 0.4],\n"
+        "    \"input_acts\": \"0.2,0.3,0.4,0.5\",\n"
+        "    \"json_stdout\": true,\n"
+        "    \"verify\": true,\n"
+        "    \"emit_blif_content\": true\n"
+        "  }\n"
+        "}\n");
+
+    const app::SingleBlifOptions opts = app::parseSingleBlifOptions(
+        {"--config", path.string()}, 6, "optimize-blif");
+    require(opts.blifPath == fs::path("inputs/design.blif"),
+            "Single BLIF blif_path was not parsed.");
+    require(opts.libraryDir == fs::path("lib"),
+            "Single BLIF library_dir was not parsed.");
+    require(opts.abcLocalLibraryDir == fs::path("lib_abc_local"),
+            "Single BLIF abc_local_library_dir was not parsed.");
+    require(opts.outputDir == fs::path("single_out"),
+            "Single BLIF output_dir was not parsed.");
+    require(opts.resultJsonPath ==
+                fs::path("results_repo/single_out/custom.json"),
+            "Single BLIF result_json was not parsed.");
+    require(opts.inputProbs.size() == 4 && opts.inputProbs[0] == 0.1,
+            "Single BLIF input_probs were not parsed.");
+    require(opts.inputActs.size() == 4 && opts.inputActs[3] == 0.5,
+            "Single BLIF input_acts were not parsed.");
+    require(opts.jsonStdout && opts.verify && opts.emitBlifContent,
+            "Single BLIF flags were not parsed.");
+
+    const app::SingleBlifOptions overridden = app::parseSingleBlifOptions(
+        {"--config", path.string(),
+         "--input-probs", "0.5,0.5,0.5,0.5",
+         "--result-json", "results_repo/override.json"},
+        6,
+        "optimize-blif");
+    require(overridden.inputProbs[2] == 0.5,
+            "CLI --input-probs should override config input_probs.");
+    require(overridden.resultJsonPath == fs::path("results_repo/override.json"),
+            "CLI --result-json should override config result_json.");
+
+    const app::SingleBlifOptions jsonFlag = app::parseSingleBlifOptions(
+        {"--blif", "design.blif", "--input-probs", "0.5,0.5", "--json"},
+        6,
+        "evaluate-blif");
+    require(jsonFlag.jsonStdout,
+            "CLI --json should enable JSON stdout mode.");
+
+    requireSingleThrows(
+        {"--input-probs", "0.1,0.2", "--input-acts", "0.1"},
+        "evaluate-blif",
+        "mismatched single BLIF activity vectors");
+    fs::remove(path);
+}
+
 void verifyShippedConfigsParse() {
     const fs::path projectRoot = findProjectRootForShippedConfigs();
 
@@ -234,6 +315,10 @@ void verifyShippedConfigsParse() {
         projectRoot / "config" / "build_library_small.json";
     const fs::path evalConfig =
         projectRoot / "config" / "evaluate_default.json";
+    const fs::path optSingleConfig =
+        projectRoot / "config" / "optimize_blif.json";
+    const fs::path evalSingleConfig =
+        projectRoot / "config" / "evaluate_blif.json";
 
     const app::GenerateOptions buildOpts =
         app::parseGenerateOptions({"--config", buildConfig.string()}, 6);
@@ -257,12 +342,37 @@ void verifyShippedConfigsParse() {
 
     const app::EvaluationOptions evalOpts =
         app::parseEvaluationOptions({"--config", evalConfig.string()}, 6);
-    require(evalOpts.benchmarkDir == fs::path("benchmarks"),
+    require(evalOpts.benchmarkDir ==
+                fs::path("/home/yhs_joker/datasets/benchmarks"),
             "Shipped evaluate_default.json benchmark_dir changed unexpectedly.");
-    require(evalOpts.libraryDir == fs::path("results_repo/library_middle"),
+    require(evalOpts.libraryDir == fs::path("library_middle"),
             "Shipped evaluate_default.json library_dir changed unexpectedly.");
+    require(evalOpts.outputDir == fs::path("evaluation_default"),
+            "Shipped evaluate_default.json output_dir changed unexpectedly.");
     require(evalOpts.abcLocalLibraryDir.empty(),
             "Shipped evaluate_default.json should rely on auto-built ABC local library.");
+
+    const app::SingleBlifOptions optSingleOpts =
+        app::parseSingleBlifOptions({"--config", optSingleConfig.string()},
+                                    6,
+                                    "optimize-blif");
+    require(optSingleOpts.libraryDir == fs::path("library_middle"),
+            "Shipped optimize_blif.json library_dir changed unexpectedly.");
+    require(optSingleOpts.outputDir ==
+                fs::path("single_blif_opt_example"),
+            "Shipped optimize_blif.json output_dir changed unexpectedly.");
+    require(optSingleOpts.inputProbs.size() == 4,
+            "Shipped optimize_blif.json should include 4 input probabilities.");
+
+    const app::SingleBlifOptions evalSingleOpts =
+        app::parseSingleBlifOptions({"--config", evalSingleConfig.string()},
+                                    6,
+                                    "evaluate-blif");
+    require(evalSingleOpts.libraryDir == fs::path("library_middle"),
+            "Shipped evaluate_blif.json library_dir changed unexpectedly.");
+    require(evalSingleOpts.outputDir ==
+                fs::path("single_blif_eval_example"),
+            "Shipped evaluate_blif.json output_dir changed unexpectedly.");
 }
 
 void verifyMemoryBudgetWorkerReduction() {
@@ -325,6 +435,7 @@ int main() {
         fes::verifyConfigParsingAndCliPrecedence();
         fes::verifyInvalidConfigDetection();
         fes::verifyEvaluationConfigParsing();
+        fes::verifySingleBlifConfigParsing();
         fes::verifyShippedConfigsParse();
         fes::verifyMemoryBudgetWorkerReduction();
         fes::verifyRemovedSynthLibOption();

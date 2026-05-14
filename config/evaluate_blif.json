@@ -1,0 +1,14 @@
+{
+  "command": "evaluate-blif",
+  "dependencies": {
+    "abc_path": "/home/yhs_joker/softwares/abc/abc",
+    "python_script": "scripts/single_power_run.py"
+  },
+  "evaluate_blif": {
+    "blif_path": "benchmarks/example.blif",
+    "library_dir": "library_middle",
+    "output_dir": "single_blif_eval_example",
+    "input_probs": [0.5, 0.5, 0.5, 0.5],
+    "verify": true
+  }
+}

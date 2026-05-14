@@ -64,6 +64,91 @@ struct SingleOptResult {
     }
 };
 
+inline std::string ppaResultToJson(const PPAResult& ppa) {
+    std::stringstream ss;
+    ss << "{";
+    ss << "\"valid\": " << (ppa.valid ? "true" : "false") << ",";
+    ss << "\"power_total\": " << ppa.power_total << ",";
+    ss << "\"power_internal\": " << ppa.power_internal << ",";
+    ss << "\"power_switching\": " << ppa.power_switching << ",";
+    ss << "\"power_leakage\": " << ppa.power_leakage << ",";
+    ss << "\"area\": " << ppa.area << ",";
+    ss << "\"delay\": " << ppa.delay;
+    ss << "}";
+    return ss.str();
+}
+
+struct SingleBlifResult {
+    bool success = false;
+    std::string errorMessage;
+    std::string command;
+    std::string sourceBlifPath;
+    std::string outputDir;
+    std::string resultJsonPath;
+    std::string stdoutLogPath;
+    std::string stderrLogPath;
+    std::string selectedStrategy = "NONE";
+    std::string optimizedBlifPath;
+    std::string optimizedBlifContent;
+    std::vector<double> inputProbs;
+    std::vector<double> inputActs;
+    PPAResult origPPA;
+    PPAResult abcHighPPA;
+    PPAResult abcLocalPPA;
+    PPAResult ponoPPA;
+    double runtimeMs = 0.0;
+
+    std::string toJson() const {
+        auto vectorToJson = [](const std::vector<double>& values) {
+            std::stringstream ss;
+            ss << "[";
+            for (std::size_t i = 0; i < values.size(); ++i) {
+                if (i > 0) ss << ",";
+                ss << values[i];
+            }
+            ss << "]";
+            return ss.str();
+        };
+        auto gainToJson = [](const PPAResult& base, const PPAResult& target) {
+            if (!base.valid || !target.valid || base.power_total <= 0.0) {
+                return std::string("null");
+            }
+            const double gain =
+                (base.power_total - target.power_total) / base.power_total * 100.0;
+            std::stringstream ss;
+            ss << gain;
+            return ss.str();
+        };
+
+        std::stringstream ss;
+        ss << "{";
+        ss << "\"success\": " << (success ? "true" : "false") << ",";
+        ss << "\"errorMessage\": \"" << escapeJsonString(errorMessage) << "\",";
+        ss << "\"command\": \"" << escapeJsonString(command) << "\",";
+        ss << "\"sourceBlifPath\": \"" << escapeJsonString(sourceBlifPath) << "\",";
+        ss << "\"outputDir\": \"" << escapeJsonString(outputDir) << "\",";
+        ss << "\"resultJsonPath\": \"" << escapeJsonString(resultJsonPath) << "\",";
+        ss << "\"stdoutLogPath\": \"" << escapeJsonString(stdoutLogPath) << "\",";
+        ss << "\"stderrLogPath\": \"" << escapeJsonString(stderrLogPath) << "\",";
+        ss << "\"selectedStrategy\": \"" << escapeJsonString(selectedStrategy) << "\",";
+        ss << "\"optimizedBlifPath\": \"" << escapeJsonString(optimizedBlifPath) << "\",";
+        ss << "\"inputProbs\": " << vectorToJson(inputProbs) << ",";
+        ss << "\"inputActs\": " << vectorToJson(inputActs) << ",";
+        ss << "\"runtimeMs\": " << runtimeMs << ",";
+        ss << "\"gainVsOrigPct\": " << gainToJson(origPPA, ponoPPA) << ",";
+        ss << "\"gainVsAbcPct\": " << gainToJson(abcHighPPA, ponoPPA) << ",";
+        ss << "\"gainVsAbcLocalPct\": " << gainToJson(abcLocalPPA, ponoPPA) << ",";
+        ss << "\"orig\": " << ppaResultToJson(origPPA) << ",";
+        ss << "\"abc\": " << ppaResultToJson(abcHighPPA) << ",";
+        ss << "\"abcLocal\": " << ppaResultToJson(abcLocalPPA) << ",";
+        ss << "\"pono\": " << ppaResultToJson(ponoPPA) << ",";
+        ss << "\"optimizedBlifContent\": \""
+           << escapeJsonString(optimizedBlifContent) << "\"";
+        ss << "}";
+        return ss.str();
+    }
+};
+
 struct FragmentPowerInfo {
     double totalSwitching = 0.0; // 内部所有 .names 输出翻转率之和
     int    gateCount = 0;        // .names 个数
@@ -100,6 +185,13 @@ public:
     SingleOptResult optimizeSingleBlifFromContent(
             const std::string& blifContent, 
             const std::vector<double>& actualProbs);
+
+    SingleBlifResult analyzeSingleBlif(
+        const std::string& inputBlifPath,
+        const std::vector<double>& inputProbs,
+        const std::vector<double>& inputActs,
+        const std::filesystem::path& optimizedBlifOutputPath = {},
+        bool includeOptimizedBlifContent = false);
             
     // When enabled, every rewrite/optimization path runs a BLIF-level
     // combinational equivalence check against its input before handing
@@ -108,6 +200,7 @@ public:
     void enableVerification(bool on) { verifyEnabled_ = on; }
     void setResumePolicy(ResumePolicy policy) { resumePolicy_ = policy; }
     void setCaseTimeoutMs(int timeoutMs) { caseTimeoutMs_ = timeoutMs; }
+    void setOutputRootDir(const std::filesystem::path& outputRoot);
 
 private:
     // 1. 递归获取所有 blif 文件路径
@@ -235,6 +328,7 @@ private:
 
     ResumePolicy resumePolicy_ = ResumePolicy::kRunAll;
     int caseTimeoutMs_ = 0;
+    std::filesystem::path outputRootPath_;
     std::filesystem::path workDir_;
 };
 
