@@ -34,10 +34,6 @@ desktop.ini
 # 忽略所有实验结果
 results_repo/
 
-# 资源目录默认忽略；只显式放行这次新增的小门集配置文件
-resources/*
-!resources/standard_cells_small.csv
-
 # 运行日志与临时目录
 logs/
 tmp_eval/
