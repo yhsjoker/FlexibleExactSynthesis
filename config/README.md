@@ -1,116 +1,241 @@
-# Config Files
+# 配置文件说明
 
-The runtime parser accepts strict JSON only. Do not add comments or trailing
-commas to runnable `.json` files.
+`config/` 目录保存可直接传给 `fes_app --config` 的严格 JSON 文件。运行时解析器不支持注释和尾随逗号，因此本目录中的 `.json` 文件必须保持合法 JSON。
 
-## Path Rules
+## 路径规则
 
-- Absolute paths are used as-is.
-- Relative paths in JSON are resolved from the project root.
-- The exceptions are:
-  `generate.output_dir`, `evaluate.library_dir`,
-  `evaluate.abc_local_library_dir`, `evaluate.output_dir`,
-  `optimize_blif.library_dir`, `optimize_blif.abc_local_library_dir`,
-  `optimize_blif.output_dir`, `evaluate_blif.library_dir`,
-  `evaluate_blif.abc_local_library_dir`, and `evaluate_blif.output_dir`.
-  When any of those are relative, they are resolved under
-  `<project_root>/results_repo`.
-- Paths are not resolved relative to the current shell directory or the config
-  file directory.
+- 绝对路径原样使用。
+- 普通相对路径按项目根目录解析。
+- 以下字段的相对路径会解析到 `<project_root>/results_repo` 下：
+  `generate.output_dir`、`evaluate.library_dir`、`evaluate.abc_local_library_dir`、`evaluate.output_dir`、`optimize_blif.library_dir`、`optimize_blif.abc_local_library_dir`、`optimize_blif.output_dir`、`evaluate_blif.library_dir`、`evaluate_blif.abc_local_library_dir`、`evaluate_blif.output_dir`。
+- 路径不会按当前 shell 目录、`build/` 目录或配置文件所在目录解析。
 
-## Shipped Configs
+示例：
 
-| File | Workflow | Purpose |
+```json
+{
+  "evaluate": {
+    "library_dir": "library_middle",
+    "output_dir": "evaluation_default"
+  }
+}
+```
+
+实际会解析为：
+
+```text
+<project_root>/results_repo/library_middle
+<project_root>/results_repo/evaluation_default
+```
+
+## 当前配置文件
+
+| 文件 | 命令 | 用途 |
 | --- | --- | --- |
-| `build_library.json` | `generate` | Primary K=4 exhaustive build using the default standard-cell set in `resources/standard_cells.csv`. Activity mode is `uniform`, so each library function gets the standard `(0.1,0.1,0.1,0.1)` through `(0.9,0.9,0.9,0.9)` sweep. Output goes to `results_repo/library_middle`. |
-| `build_library_small.json` | `generate` | Faster build using the reduced gate set in `resources/standard_cells_small.csv`. Useful for quick bring-up or experiments. Output goes to `results_repo/library_small`. |
-| `evaluate_default.json` | `evaluate` | Unified four-method physical evaluation: `Original / ABC Global / ABC Local / PONO`. Results are written to a dedicated evaluation output directory. If `evaluate.abc_local_library_dir` is omitted, the app auto-builds `<library_dir>_abc_local` before evaluation. |
-| `optimize_blif.json` | `optimize-blif` | Single-BLIF optimization example. Exports `result.json` plus `optimized.blif` under the configured output directory. |
-| `evaluate_blif.json` | `evaluate-blif` | Single-BLIF evaluation example with explicit input probabilities. Useful as a backend-facing template. |
+| `build_library.json` | `generate` | 主建库配置。默认 K=4，穷举函数，活动模式为 `uniform`，输出到 `results_repo/library_middle`。 |
+| `build_library_small.json` | `generate` | 使用 `resources/standard_cells_small.csv` 的快速建库配置，适合调试流程。 |
+| `evaluate_default.json` | `evaluate` | 批量评测配置。比较 `Original / ABC Global / ABC Local / PONO portfolio`，并选择真实功耗最低的候选。 |
+| `optimize_blif.json` | `optimize-blif` | 单个 BLIF 优化模板。需要替换 `blif_path` 和输入概率。 |
+| `evaluate_blif.json` | `evaluate-blif` | 单个 BLIF 评测模板。需要替换 `blif_path` 和输入概率。 |
 
-## Typical Usage
+## 常用命令
 
-Build the main library:
+建库：
 
 ```bash
 ./build/fes_app generate --config config/build_library.json
 ```
 
-Build the smaller/faster library:
+快速建库：
 
 ```bash
 ./build/fes_app generate --config config/build_library_small.json
 ```
 
-Run the merged evaluation flow:
+批量评测：
 
 ```bash
 ./build/fes_app evaluate --config config/evaluate_default.json
 ```
 
-Optimize one BLIF:
-
-```bash
-./build/fes_app optimize-blif --config config/optimize_blif.json
-```
-
-Optimize one BLIF with machine-readable stdout:
+单网表优化：
 
 ```bash
 ./build/fes_app optimize-blif --config config/optimize_blif.json --json
 ```
 
-Evaluate one BLIF:
+单网表评测：
 
 ```bash
-./build/fes_app evaluate-blif --config config/evaluate_blif.json
+./build/fes_app evaluate-blif --config config/evaluate_blif.json --json
 ```
 
-Validate a config without running it:
+环境检查：
 
 ```bash
-./build/fes_app validate-config --config config/evaluate_default.json
+./build/fes_app doctor --config config/evaluate_default.json
 ```
 
-Check environment dependencies:
+配置预检查：
 
 ```bash
-./build/fes_app doctor
+./build/fes_app validate-config --config config/build_library.json
 ```
 
-The shipped single-BLIF configs use placeholder `blif_path` values. Replace
-them with your actual target netlist before execution.
+## 顶层字段
 
-## Common Parameters
+| 字段 | 说明 |
+| --- | --- |
+| `command` | 要执行的命令：`generate`、`evaluate`、`optimize-blif`、`evaluate-blif`。 |
+| `dependencies` | 工具和资源路径，例如 ABC、Python 脚本、genlib、Liberty、标准单元 CSV。 |
+| `run` | 运行控制，例如恢复策略、线程数、超时和内存预算。 |
+| `generate` | 建库参数。 |
+| `evaluate` | 批量评测参数。 |
+| `optimize_blif` | 单个 BLIF 优化参数。 |
+| `evaluate_blif` | 单个 BLIF 评测参数。 |
 
-| Parameter | Applies To | Meaning |
-| --- | --- | --- |
-| `dependencies.abc_path` | all ABC-backed flows | ABC executable path. Relative values are project-root-relative. |
-| `dependencies.python_script` | generation/evaluation | Physical-power helper script. Relative values are project-root-relative. |
-| `dependencies.genlib_path` | generation | ABC genlib path. Relative values are project-root-relative. |
-| `dependencies.liberty_path` | generation | Liberty file path. Relative values are project-root-relative. |
-| `dependencies.standard_cell_csv` | generation | Standard-cell CSV used for gate metadata and exact-synthesis gate derivation. |
-| `run.resume_policy` | generate/evaluate | `run_all`, `skip_completed`, `resume`, `rerun_failed`, or `rerun_timeout`. |
-| `run.case_timeout_ms` | generate/evaluate | Shared per-case timeout. `0` disables timeout marking. |
-| `run.threads` | generate/evaluate | Worker hint. Generation uses it directly; evaluation currently records it for diagnostics and memory-budget normalization. |
-| `run.max_worker_memory_mb` | generate/evaluate | Best-effort per-worker memory budget. |
-| `run.max_total_memory_mb` | generate/evaluate | Best-effort total memory budget. |
-| `generate.output_dir` | generate | Relative values are rooted under `results_repo`. |
-| `generate.activity.mode` | generate | `uniform`, `cartesian`, or `explicit`. |
-| `generate.activity.levels` | generate | Activity levels for `uniform` or `cartesian`. Omit for the default uniform sweep. |
-| `generate.activity.explicit` | generate | Explicit activity vectors. |
-| `evaluate.library_dir` | evaluate | Main PONO library directory. Relative values are rooted under `results_repo`. |
-| `evaluate.abc_local_library_dir` | evaluate | Optional ABC local-library directory. If omitted, the evaluator auto-builds `<library_dir>_abc_local`. Relative values are rooted under `results_repo`. |
-| `evaluate.output_dir` | evaluate | Output directory for `ppa_complete_validation.csv`, `evaluation_cases.csv`, and `evaluation_summary.json`. Relative values are rooted under `results_repo`. |
-| `evaluate.verify` | evaluate | Enable rewrite-time combinational equivalence checking. |
-| `optimize_blif.blif_path` / `evaluate_blif.blif_path` | single-BLIF flows | Input netlist to analyze. Relative values are project-root-relative. |
-| `optimize_blif.input_probs` / `evaluate_blif.input_probs` | single-BLIF flows | Required input probabilities, ordered exactly as `.inputs` appears in the BLIF. |
-| `optimize_blif.input_acts` / `evaluate_blif.input_acts` | single-BLIF flows | Optional input activities. If omitted on the CLI, the tool derives `2*p*(1-p)` for each input. |
-| `optimize_blif.json_stdout` / `evaluate_blif.json_stdout` | single-BLIF flows | When `true`, print only the final result JSON to stdout and write captured execution logs to `<output_dir>/stdout.log` and `<output_dir>/stderr.log`. Passing CLI `--json` is the recommended backend-facing way to enable it. |
-| `optimize_blif.library_dir` / `evaluate_blif.library_dir` | single-BLIF flows | Main PONO library directory. Relative values are rooted under `results_repo`. |
-| `optimize_blif.abc_local_library_dir` / `evaluate_blif.abc_local_library_dir` | single-BLIF flows | Optional ABC local-library directory. Relative values are rooted under `results_repo`. |
-| `optimize_blif.output_dir` / `evaluate_blif.output_dir` | single-BLIF flows | Output directory for `result.json` and any exported BLIF artifacts. Relative values are rooted under `results_repo`. |
-| `optimize_blif.emit_blif_content` | `optimize-blif` | When `true`, embed the optimized BLIF text directly into `result.json`. |
+## `dependencies`
 
-Legacy flat timeout keys and legacy `tools.*` dependency keys are still parsed
-for compatibility, but new configs should prefer the grouped keys above.
+```json
+{
+  "dependencies": {
+    "abc_path": "/path/to/abc/abc",
+    "python_script": "scripts/single_power_run.py",
+    "genlib_path": "resources/nangate_45nm.genlib",
+    "liberty_path": "resources/NangateOpenCellLibrary_typical.lib",
+    "standard_cell_csv": "resources/standard_cells.csv"
+  }
+}
+```
+
+- `abc_path`：ABC 可执行文件路径。也可以用环境变量 `ABC_PATH` 作为后备。
+- `python_script`：物理功耗评测入口脚本。
+- `genlib_path`：建库时供 ABC 使用的 genlib。
+- `liberty_path`：建库相关 Liberty 文件。
+- `standard_cell_csv`：精确综合使用的标准单元描述，是建库门集的直接来源。
+
+## `run`
+
+```json
+{
+  "run": {
+    "resume_policy": "resume",
+    "case_timeout_ms": 0,
+    "threads": 4,
+    "max_worker_memory_mb": 10240,
+    "max_total_memory_mb": 51200
+  }
+}
+```
+
+- `resume_policy`：支持 `run_all`、`skip_completed`、`resume`、`rerun_failed`、`rerun_timeout`。
+- `case_timeout_ms`：单 case 超时标记，`0` 表示不启用。
+- `threads`：建库线程数。评测阶段目前只作为诊断信息记录。
+- `max_worker_memory_mb` 和 `max_total_memory_mb`：建库阶段的保守内存预算，用于限制实际并发数。
+
+## `generate`
+
+```json
+{
+  "generate": {
+    "k": 4,
+    "num_functions": 0,
+    "function_source": "exhaustive",
+    "output_dir": "library_middle",
+    "verify": false,
+    "timeouts_ms": {
+      "sat": 20000,
+      "optimization": 100000,
+      "case": 0
+    },
+    "activity": {
+      "mode": "uniform"
+    }
+  }
+}
+```
+
+- `k`：目标函数输入数。
+- `num_functions`：生成函数数量。`0` 表示不截断，使用完整集合。
+- `function_source`：`exhaustive` 或 `benchmark`。
+- `output_dir`：输出库目录，相对路径位于 `results_repo/` 下。
+- `verify`：是否对生成子电路做等价性检查。
+- `timeouts_ms.sat`：SAT 求解超时。
+- `timeouts_ms.optimization`：单个精确综合优化超时。
+- `timeouts_ms.case`：单 case 总超时标记。
+- `activity.mode`：`uniform`、`cartesian` 或 `explicit`。
+
+`uniform` 默认生成 `(0.1,0.1,0.1,0.1)` 到 `(0.9,0.9,0.9,0.9)` 的均匀活动模式。
+
+## `evaluate`
+
+```json
+{
+  "evaluate": {
+    "benchmark_dir": "/path/to/benchmarks",
+    "library_dir": "library_middle",
+    "output_dir": "evaluation_default",
+    "verify": true
+  }
+}
+```
+
+- `benchmark_dir`：benchmark 根目录，可以是绝对路径或项目根目录相对路径。
+- `library_dir`：主 PONO 库目录，相对路径位于 `results_repo/` 下。
+- `abc_local_library_dir`：可选 ABC 局部库目录。省略时会自动使用 `<library_dir>_abc_local`，若不存在则自动构建。
+- `output_dir`：评测输出目录，相对路径位于 `results_repo/` 下。
+- `verify`：是否对重写后的 BLIF 做 CEC。
+
+批量评测产物：
+
+```text
+ppa_complete_validation.csv
+evaluation_cases.csv
+evaluation_manifest.csv
+evaluation_summary.json
+```
+
+## `optimize_blif` 和 `evaluate_blif`
+
+```json
+{
+  "optimize_blif": {
+    "blif_path": "benchmarks/example.blif",
+    "library_dir": "library_middle",
+    "output_dir": "single_blif_opt_example",
+    "input_probs": [0.5, 0.5, 0.5, 0.5],
+    "verify": true,
+    "emit_blif_content": false
+  }
+}
+```
+
+- `blif_path`：输入 BLIF 网表。示例配置中的路径是占位符，正式运行前必须替换。
+- `library_dir`：主库目录，相对路径位于 `results_repo/` 下。
+- `output_dir`：输出目录，相对路径位于 `results_repo/` 下。
+- `input_probs`：输入静态概率，顺序必须和 `.inputs` 一致。
+- `input_acts`：可选输入翻转率。省略时按 `2*p*(1-p)` 自动计算。
+- `json_stdout`：为 `true` 时 stdout 只输出最终 JSON。
+- `emit_blif_content`：为 `true` 时在 `result.json` 中嵌入优化后 BLIF 文本。
+
+单网表 JSON 的重要字段：
+
+```text
+success
+errorMessage
+selectedStrategy
+optimizedBlifPath
+gainVsOrigPct
+gainVsAbcPct
+gainVsAbcLocalPct
+orig
+abc
+abcLocal
+pono
+```
+
+其中 `pono` 字段表示最终选择的最低功耗候选，不一定来自 PONO 重写；当 `Original` 或 ABC 候选功耗最低时，也会作为最终候选记录。
+
+## 兼容字段
+
+旧版 `tools.*` 和部分扁平 timeout 字段仍然可以解析，但新配置应优先使用 `dependencies`、`run` 和 `timeouts_ms` 的分组写法。

@@ -6,6 +6,7 @@
 #include <memory>
 #include <set>
 #include <unordered_map>
+#include <utility>
 #include "fes/core/GateType.h"
 #include "fes/flow/RunManifest.h"
 #include "fes/utils/EquivalenceChecker.h"
@@ -27,6 +28,7 @@ struct PPADiff {
     PPAResult abcHighPPA;   // ABC 激进优化
     PPAResult abcLocalPPA;  // ABC 局部库 rewrite
     PPAResult ponoPPA;      // PONO 优化
+    std::string selectedStrategy = "NONE";
     bool success = false;
 };
 
@@ -203,6 +205,14 @@ public:
     void setOutputRootDir(const std::filesystem::path& outputRoot);
 
 private:
+    enum class PonoRewriteProfile {
+        Aggressive,
+        Conservative,
+        LowPower,
+        Strict,
+        PositiveOnly
+    };
+
     // 1. 递归获取所有 blif 文件路径
     std::vector<std::string> findBlifFilesRecursive(const std::filesystem::path& folderPath);
 
@@ -270,6 +280,13 @@ private:
     std::string rewriteBlifWithLibrary(const std::string& originalBlifPath,
                                        const std::vector<double>& actualProbs,
                                        bool isAggressive = true);
+    std::string rewriteBlifWithLibraryProfile(
+        const std::string& originalBlifPath,
+        const std::vector<double>& actualProbs,
+        PonoRewriteProfile profile);
+    std::vector<std::pair<std::string, std::string>> runPonoRewritePortfolio(
+        const std::string& originalBlifPath,
+        const std::vector<double>& actualProbs);
 
     int selectBestEntry(const std::vector<LibEntry>& candidates,
                         const std::vector<double>& currentProbs,
@@ -278,6 +295,7 @@ private:
 
     // 4. 旧 ABC 强流
     std::string runABCExhaustiveOpt(const std::string& inputBlif);
+    std::string runABCLowPowerOpt(const std::string& inputBlif);
 
     // 只做 LUT4 mapping，供 ABC local-library rewrite 复用
     std::string run4LutMappingOnly(const std::string& inputBlif);

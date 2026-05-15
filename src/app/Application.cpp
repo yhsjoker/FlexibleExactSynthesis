@@ -429,8 +429,8 @@ void printSingleBlifHelp(const AppContext& ctx,
     std::cout
         << "Usage: fes_app " << commandName << " [options]\n\n"
         << (optimizeMode
-                ? "Run the unified four-method flow on one BLIF and export the winning PONO rewrite.\n\n"
-                : "Evaluate one BLIF with Original / ABC / ABC Local / PONO under explicit input parameters.\n\n")
+                ? "Run the power-selection flow on one BLIF and export the lowest-power legal candidate.\n\n"
+                : "Evaluate one BLIF with Original / ABC / ABC Local / PONO portfolio under explicit input parameters.\n\n")
         << "Options:\n"
         << "  --config <file>     JSON config file. CLI flags override config values\n"
         << "  --blif <file>       Input BLIF file to analyze\n"
@@ -482,7 +482,7 @@ void printGeneralHelp(const AppContext& ctx) {
         << "  fes_app help [generate|optimize|evaluate|benchmark|optimize-blif|evaluate-blif|doctor|validate-config]\n\n"
         << "Commands:\n"
         << "  generate   Build a sub-circuit library using exhaustive or benchmark mode\n"
-        << "  optimize   Run the unified four-method physical-validation flow\n"
+        << "  optimize   Run the unified physical-validation and power-selection flow\n"
         << "  evaluate   Alias for optimize with config-friendly naming\n"
         << "  benchmark  Alias for optimize/physical validation workflows\n\n"
         << "  optimize-blif  Optimize one BLIF and emit structured JSON/artifacts\n"
@@ -761,7 +761,7 @@ int runOptimizeCommand(const AppContext& ctx, EvaluationOptions opts) {
               << opts.maxWorkerMemoryMb
               << ", max_total=" << opts.maxTotalMemoryMb
               << " (best-effort diagnostic for evaluation)\n";
-    std::cout << "[Optimize] Tournament mode: aggressive vs conservative PONO rewrite\n";
+    std::cout << "[Optimize] Selection mode: lowest measured power among original, ABC, ABC local, and PONO portfolio\n";
     std::cout << "[Optimize] Library: " << fs::absolute(opts.libraryDir) << "\n";
     std::cout << "[Optimize] ABC local library: "
               << fs::absolute(opts.abcLocalLibraryDir) << "\n";

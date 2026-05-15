@@ -1,290 +1,235 @@
-# Configuration
+# 配置系统与路径规则
 
-PONO supports strict JSON config files for generation, physical validation, and
-benchmark-oriented workflows. Direct CLI flags still work and override config
-values when the same setting is exposed.
+本项目推荐通过 JSON 配置驱动所有可复现实验。命令行参数仍然可用，并且优先级高于配置文件中的同名字段。
 
-The runtime parser does not support comments or trailing commas. Keep runnable
-files in `config/*.json` as strict JSON. Human-readable commented examples are
-kept separately in `config/examples/*.jsonc`, and the parameter reference lives
-in `config/README.md`.
+## 严格 JSON
 
-## Path Semantics
+`fes_app` 只接受严格 JSON：
 
-Path resolution is project-root based:
+- 不允许注释。
+- 不允许尾随逗号。
+- 字符串必须使用双引号。
 
-- absolute paths are used as-is
-- relative input, resource, and dependency paths in JSON are resolved below the
-  compiled project root
-- relative `generate.output_dir` and CLI `--out` values are rooted under
-  `<project_root>/results_repo`
-- paths are not resolved relative to the current working directory, build
-  directory, or config file directory
+因此 `config/*.json` 应保持可直接运行，不要写说明性注释。说明文字统一写在 Markdown 文档中。
 
-This remains true when running from `build/`, for example:
+## 路径解析
 
-```bash
-cd <project_root>/build
-./fes_app generate --config ../config/build_library.json
-```
+路径解析遵循固定规则，避免因为从不同目录启动程序而产生歧义。
 
-Example:
+| 路径类型 | 解析方式 |
+| --- | --- |
+| 绝对路径 | 原样使用 |
+| 普通相对路径 | 相对于项目根目录 |
+| 建库输出目录 `generate.output_dir` | 相对于 `results_repo/` |
+| 评测库目录 `evaluate.library_dir` | 相对于 `results_repo/` |
+| 评测输出目录 `evaluate.output_dir` | 相对于 `results_repo/` |
+| 单网表库目录和输出目录 | 相对于 `results_repo/` |
+
+示例：
 
 ```json
 {
-  "dependencies": {
-    "abc_path": "third_party/abc/abc",
-    "python_script": "scripts/single_power_run.py",
-    "genlib_path": "resources/nangate_45nm.genlib"
-  },
-  "generate": {
-    "output_dir": "activity_uniform_k4_num1"
+  "evaluate": {
+    "benchmark_dir": "/home/user/benchmarks",
+    "library_dir": "library_middle",
+    "output_dir": "evaluation_default"
   }
 }
 ```
 
-resolves to:
+会解析为：
 
-- `<project_root>/third_party/abc/abc`
-- `<project_root>/scripts/single_power_run.py`
-- `<project_root>/resources/nangate_45nm.genlib`
-- `<project_root>/results_repo/activity_uniform_k4_num1`
+```text
+benchmark_dir = /home/user/benchmarks
+library_dir   = <project_root>/results_repo/library_middle
+output_dir    = <project_root>/results_repo/evaluation_default
+```
 
-`results_repo/<name>` is still accepted for compatibility and resolves to the
-same output-root location, but new configs should prefer the shorter `<name>`
-form for `output_dir`.
+兼容写法 `results_repo/library_middle` 仍然可用，但新配置建议直接写 `library_middle`。
 
-## Current Config Set
+## 配置优先级
 
-Runnable configs:
+从低到高：
 
-- `config/build_library.json`: primary full-library build
-- `config/generate_k4_uniform.json`: legacy uniform sweep generation
-- `config/generate_k4_cartesian.json`: cartesian activity generation
-- `config/generate_k4_explicit.json`: explicit activity-list generation
-- `config/generate_benchmark_k4_cartesian.json`: benchmark-driven generation
-- `config/benchmark_default.json`: standard benchmark physical validation
-- `config/evaluate_default.json`: standard evaluate physical validation
-- `config/evaluate_mapped_four_way.json`: mapped four-way evaluation
-- `config/deployment_example.json`: dependency-path deployment template
+1. 程序内置默认值
+2. JSON 配置文件
+3. 命令行参数
 
-Commented `.jsonc` equivalents are available under `config/examples/`. They
-are documentation only and should not be passed to `fes_app --config`.
+例如：
 
-The benchmark/evaluate configs use `benchmark_dir: "benchmarks"` as a portable
-placeholder. Replace it with an absolute benchmark directory or with a
-project-root-relative dataset directory before running full validation jobs.
+```bash
+./build/fes_app evaluate \
+  --config config/evaluate_default.json \
+  --lib library_s1 \
+  --out evaluation_s1
+```
 
-## Primary Full-Library Build
+即使 JSON 中写了 `library_dir` 和 `output_dir`，这里也会被 `--lib` 和 `--out` 覆盖。
 
-Use this as the main generation entry point:
+## 环境检查
+
+推荐在长任务前先运行：
+
+```bash
+./build/fes_app doctor --config config/evaluate_default.json
+```
+
+该命令会检查：
+
+- ABC 路径
+- Python 评测脚本
+- benchmark 目录
+- 主库目录
+- `final_results.csv`
+- `detailed_infos/`
+- ABC local library 是否存在，或是否会自动构建
+
+仅检查配置合法性和输入存在性：
+
+```bash
+./build/fes_app validate-config --config config/build_library.json
+```
+
+`validate-config` 不执行建库或评测，适合前后端系统在提交任务前调用。
+
+## 建库配置要点
+
+主配置：
 
 ```bash
 ./build/fes_app generate --config config/build_library.json
 ```
 
-The current full-library representation is exhaustive NPN-canonical generation:
-`function_source: "exhaustive"` enumerates all raw truth tables for `k`, maps
-them to NPN canonical representatives, aggregates representative frequency, and
-sorts the representatives deterministically. `num_functions: 0` means no
-positive truncation, so for exhaustive mode it selects the full NPN-canonical
-representative set for the configured `k`.
-
-For the shipped primary config, `k: 4` means the exhaustive raw universe is
-`2^(2^4) = 65536` truth tables before NPN canonicalization. The config uses
-cartesian activity levels `[0.3, 0.7]`, so each selected representative gets
-`2^4 = 16` activity patterns. The output directory is
-`<project_root>/results_repo/library_k4_npn_cartesian`.
-
-The shipped config currently keeps `generate.verify: false`.
-
-The config also includes a best-effort memory budget:
-
-```json
-{
-  "run": {
-    "threads": 1,
-    "max_worker_memory_mb": 1024,
-    "max_total_memory_mb": 4096
-  }
-}
-```
-
-The shipped config currently requests one generation worker. When both memory
-fields are positive, generation caps effective workers to
-`floor(max_total_memory_mb / max_worker_memory_mb)`, with a minimum of one
-worker. This is not strict per-thread memory enforcement; it is a practical
-anti-OOM scheduling guard.
-
-## Generate
-
-Uniform legacy sweep:
-
-```bash
-./build/fes_app generate --config config/generate_k4_uniform.json
-```
-
-Cartesian grid:
-
-```bash
-./build/fes_app generate --config config/generate_k4_cartesian.json
-```
-
-Explicit activity vectors:
-
-```bash
-./build/fes_app generate --config config/generate_k4_explicit.json
-```
-
-Benchmark-driven function selection with cartesian activity:
-
-```bash
-./build/fes_app generate --config config/generate_benchmark_k4_cartesian.json
-```
-
-Resume or rerun selected statuses:
-
-```bash
-./build/fes_app generate --config config/generate_k4_cartesian.json --resume
-./build/fes_app generate --config config/generate_k4_cartesian.json --rerun failed
-./build/fes_app generate --config config/generate_k4_cartesian.json --rerun timeout
-```
-
-Generation writes under the selected output directory:
-
-- `final_results.csv`
-- `run_manifest.csv`
-- `generation_summary.json`
-- `detailed_infos/<HexFunc>/...`
-- `tmp_eval/`
-
-## Evaluate / Benchmark
-
-Standard physical validation:
-
-```bash
-./build/fes_app evaluate --config config/evaluate_default.json
-./build/fes_app benchmark --config config/benchmark_default.json
-```
-
-Mapped four-way validation:
-
-```bash
-./build/fes_app evaluate --config config/evaluate_mapped_four_way.json
-```
-
-Resume or rerun selected statuses:
-
-```bash
-./build/fes_app benchmark --config config/benchmark_default.json --resume
-./build/fes_app benchmark --config config/benchmark_default.json --rerun failed
-./build/fes_app evaluate --config config/evaluate_default.json --rerun timeout
-```
-
-Evaluation preserves the legacy validation CSVs in the selected library
-directory and adds:
-
-- `evaluation_manifest.csv`
-- `evaluation_cases.csv`
-- `evaluation_summary.json`
-
-Per-benchmark resume/rerun filtering is applied inside
-`InnovusBatchEvaluator`.
-
-## Schema Summary
-
-Top-level keys:
-
-- `command`: `generate`, `evaluate`, or `benchmark`
-- `dependencies`: runtime dependency/resource paths such as `abc_path`,
-  `genlib_path`, `liberty_path`, `python_script`, and `standard_cell_csv`
-- `tools`: compatibility alias for older dependency path overrides
-- `run`: shared run controls
-- `generate`: library generation settings
-- `evaluate` or `benchmark`: physical validation settings
-
-Runtime dependencies:
-
-```json
-{
-  "dependencies": {
-    "abc_path": "/absolute/path/to/abc",
-    "python_script": "scripts/single_power_run.py",
-    "genlib_path": "resources/nangate_45nm.genlib",
-    "liberty_path": "resources/NangateOpenCellLibrary_typical.lib",
-    "standard_cell_csv": "resources/standard_cells.csv"
-  }
-}
-```
-
-`dependencies.abc_path` is the preferred way to configure ABC. `ABC_PATH` is
-accepted as a local environment fallback. The legacy `tools.abc_path` key still
-works for existing configs.
-
-`dependencies.standard_cell_csv` is the single source of truth for generation:
-it is used both as the metadata cache for standard-cell properties and as the
-source from which the exact-synthesis primitive set is derived.
-
-Run controls:
-
-```json
-{
-  "run": {
-    "resume_policy": "resume",
-    "case_timeout_ms": 600000,
-    "threads": 0,
-    "max_worker_memory_mb": 2048,
-    "max_total_memory_mb": 8192
-  }
-}
-```
-
-Supported resume policies are `run_all`, `skip_completed`, `resume`,
-`rerun_failed`, and `rerun_timeout`. `threads: 0` means auto/default.
-Generation uses this field for `SynthesisFlow`; physical evaluation currently
-parses it for consistency but does not use it to parallelize benchmark cases.
-Memory-budget fields are optional; omitted or zero values preserve previous
-worker-count behavior.
-
-Generation timeout settings should use the grouped form:
+关键字段：
 
 ```json
 {
   "generate": {
-    "timeouts_ms": {
-      "sat": 10000,
-      "optimization": 60000,
-      "case": 0
+    "k": 4,
+    "num_functions": 0,
+    "function_source": "exhaustive",
+    "output_dir": "library_middle",
+    "activity": {
+      "mode": "uniform"
     }
   }
 }
 ```
 
-Legacy flat keys `sat_timeout_ms`, `opt_timeout_ms`, and `case_timeout_ms` are
-still accepted. For evaluation/benchmark configs, `evaluate.timeouts_ms.case`
-or `benchmark.timeouts_ms.case` is accepted as an alias for `case_timeout_ms`.
+- `k` 控制目标函数输入数量。
+- `num_functions: 0` 表示不截断函数集合。
+- `function_source: "exhaustive"` 表示使用穷举函数集合。
+- `output_dir` 相对 `results_repo/`。
+- `activity.mode: "uniform"` 使用默认同活动输入模式。
 
-Activity settings:
+建库产物：
+
+```text
+final_results.csv
+generation_summary.json
+run_manifest.csv
+detailed_infos/
+```
+
+## 批量评测配置要点
 
 ```json
 {
-  "activity": {
-    "mode": "cartesian",
-    "levels": [0.2, 0.4, 0.6, 0.8]
+  "evaluate": {
+    "benchmark_dir": "/path/to/benchmarks",
+    "library_dir": "library_middle",
+    "output_dir": "evaluation_default",
+    "verify": true
   }
 }
 ```
 
-Explicit activity lists use one array per pattern:
+当前评测流程会生成并评估多类候选：
+
+- `Original`
+- `ABC_Global`
+- `ABC_LowPower`
+- `ABC_Local`
+- `PONO_Aggressive`
+- `PONO_Conservative`
+- `PONO_LowPower`
+- `PONO_Strict`
+- `PONO_PositiveOnly`
+
+最终选择真实 PPA 中功耗最低的候选。如果 `Original` 最低，则保留原始网表作为结果。
+
+评测产物：
+
+```text
+ppa_complete_validation.csv
+evaluation_cases.csv
+evaluation_manifest.csv
+evaluation_summary.json
+```
+
+## 单网表配置要点
+
+优化单个 BLIF：
 
 ```json
 {
-  "activity": {
-    "mode": "explicit",
-    "explicit": [
-      [0.1, 0.2, 0.3, 0.4],
-      [0.4, 0.3, 0.2, 0.1]
-    ]
+  "command": "optimize-blif",
+  "optimize_blif": {
+    "blif_path": "benchmarks/example.blif",
+    "library_dir": "library_middle",
+    "output_dir": "single_blif_opt_example",
+    "input_probs": [0.5, 0.5, 0.5, 0.5],
+    "verify": true,
+    "emit_blif_content": false
   }
 }
 ```
+
+命令行推荐：
+
+```bash
+./build/fes_app optimize-blif \
+  --config config/optimize_blif.json \
+  --blif /path/to/design.blif \
+  --input-probs 0.1,0.2,0.3,0.4 \
+  --json
+```
+
+`--json` 模式适合前后端调用，因为 stdout 只包含最终 JSON，不混入普通日志。
+
+## 恢复与重跑
+
+支持的恢复策略：
+
+```text
+run_all
+skip_completed
+resume
+rerun_failed
+rerun_timeout
+```
+
+命令行示例：
+
+```bash
+./build/fes_app generate --config config/build_library.json --resume
+./build/fes_app evaluate --config config/evaluate_default.json --rerun failed
+./build/fes_app evaluate --config config/evaluate_default.json --rerun timeout
+```
+
+建库和评测都会写入 manifest 文件，用于记录每个 case 的运行状态。
+
+## 前后端调用建议
+
+后端服务应生成任务专属配置文件，并尽量使用绝对 WSL 路径。单网表任务统一加 `--json`：
+
+```bash
+./build/fes_app optimize-blif \
+  --blif /abs/path/input.blif \
+  --lib library_middle \
+  --input-probs 0.1,0.2,0.3,0.4 \
+  --out jobs/job_001 \
+  --json
+```
+
+批量任务不需要解析 stdout，直接读取输出目录下的 JSON/CSV 产物即可。

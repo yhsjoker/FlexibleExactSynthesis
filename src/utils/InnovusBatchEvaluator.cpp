@@ -137,13 +137,14 @@ std::string standardValidationHeader() {
            "Gain_Area_vs_ABC(%),Gain_Area_vs_ABC_Local(%),"
            "Delay_Orig(ns),Delay_ABC(ns),Delay_ABC_Local(ns),Delay_PONO(ns),"
            "Gain_Delay_vs_ABC(%),Gain_Delay_vs_ABC_Local(%),"
+           "Gain_Power_vs_Orig(%),Selected_Strategy,"
            "Status";
 }
 
 std::string formatStandardValidationRow(const PPADiff& r) {
     std::ostringstream out;
     if (!r.success) {
-        out << r.fileName << ",,,,,,,,,,,,,,,,,,,FAILED";
+        out << r.fileName << ",,,,,,,,,,,,,,,,,,,,,FAILED";
         return out.str();
     }
 
@@ -155,6 +156,8 @@ std::string formatStandardValidationRow(const PPADiff& r) {
         calcGain(r.abcHighPPA.power_total, r.ponoPPA.power_total);
     const double pGainAbcLocal =
         calcGain(r.abcLocalPPA.power_total, r.ponoPPA.power_total);
+    const double pGainOrig =
+        calcGain(r.origPPA.power_total, r.ponoPPA.power_total);
     const double aGainAbc = calcGain(r.abcHighPPA.area, r.ponoPPA.area);
     const double aGainAbcLocal =
         calcGain(r.abcLocalPPA.area, r.ponoPPA.area);
@@ -178,6 +181,8 @@ std::string formatStandardValidationRow(const PPADiff& r) {
         << r.ponoPPA.delay << ","
         << dGainAbc << "%,"
         << dGainAbcLocal << "%,"
+        << pGainOrig << "%,"
+        << csvEscapeLocal(r.selectedStrategy) << ","
         << "SUCCESS";
     return out.str();
 }
@@ -209,6 +214,73 @@ std::string standardFailureReason(const PPADiff& diff) {
     if (!diff.abcLocalPPA.valid) return "ABC local evaluation failed";
     if (!diff.ponoPPA.valid) return "PONO evaluation failed";
     return "Evaluation failed";
+}
+
+struct EvaluatedNetlistCandidate {
+    std::string strategy;
+    std::string blifPath;
+    PPAResult ppa;
+};
+
+bool hasUsablePower(const PPAResult& ppa) {
+    return ppa.valid && ppa.power_total > 0.0 &&
+           std::isfinite(ppa.power_total);
+}
+
+bool isBetterPowerCandidate(const PPAResult& candidate,
+                            const PPAResult& incumbent) {
+    if (!hasUsablePower(candidate)) return false;
+    if (!hasUsablePower(incumbent)) return true;
+
+    constexpr double kPowerTieAbs = 1e-9;
+    if (candidate.power_total + kPowerTieAbs < incumbent.power_total) {
+        return true;
+    }
+    if (std::abs(candidate.power_total - incumbent.power_total) > kPowerTieAbs) {
+        return false;
+    }
+
+    const bool candidateAreaValid =
+        candidate.area > 0.0 && std::isfinite(candidate.area);
+    const bool incumbentAreaValid =
+        incumbent.area > 0.0 && std::isfinite(incumbent.area);
+    if (candidateAreaValid && incumbentAreaValid &&
+        candidate.area + 1e-9 < incumbent.area) {
+        return true;
+    }
+    if (candidateAreaValid != incumbentAreaValid) {
+        return candidateAreaValid;
+    }
+
+    const bool candidateDelayValid =
+        candidate.delay > 0.0 && std::isfinite(candidate.delay);
+    const bool incumbentDelayValid =
+        incumbent.delay > 0.0 && std::isfinite(incumbent.delay);
+    if (candidateDelayValid && incumbentDelayValid &&
+        candidate.delay + 1e-9 < incumbent.delay) {
+        return true;
+    }
+    return candidateDelayValid && !incumbentDelayValid;
+}
+
+EvaluatedNetlistCandidate selectLowestPowerCandidate(
+    const std::vector<EvaluatedNetlistCandidate>& candidates) {
+    EvaluatedNetlistCandidate best;
+    best.strategy = "NONE";
+    for (const auto& candidate : candidates) {
+        if (isBetterPowerCandidate(candidate.ppa, best.ppa)) {
+            best = candidate;
+        }
+    }
+    return best;
+}
+
+void addEvaluatedCandidate(std::vector<EvaluatedNetlistCandidate>& candidates,
+                           const std::string& strategy,
+                           const std::string& blifPath,
+                           const PPAResult& ppa) {
+    if (!hasUsablePower(ppa)) return;
+    candidates.push_back({strategy, blifPath, ppa});
 }
 
 std::string timeoutReason(double runtimeMs, int timeoutMs) {
@@ -487,16 +559,29 @@ void InnovusBatchEvaluator::runBatchVerification(const std::string& benchmarksDi
             return verifier_.getPPAResult(
                 blifPath, workload.probs, workload.acts);
         };
+        std::vector<EvaluatedNetlistCandidate> finalCandidates;
 
         std::cout << "  - Evaluating Original..." << std::endl;
         diff.origPPA = evalOnce(filePath);
         printPPA("ORIG", diff.origPPA);
+        addEvaluatedCandidate(finalCandidates, "Original", filePath,
+                              diff.origPPA);
 
         std::cout << "  - Running ABC Script..." << std::endl;
         std::string abcHigh = runABCExhaustiveOpt(filePath); 
         if (!abcHigh.empty() && std::filesystem::exists(abcHigh)) {
             diff.abcHighPPA = evalOnce(abcHigh);
             printPPA("ABC ", diff.abcHighPPA);
+            addEvaluatedCandidate(finalCandidates, "ABC_Global", abcHigh,
+                                  diff.abcHighPPA);
+        }
+
+        std::string abcLowPower = runABCLowPowerOpt(filePath);
+        if (!abcLowPower.empty() && std::filesystem::exists(abcLowPower)) {
+            PPAResult abcLowPowerPPA = evalOnce(abcLowPower);
+            printPPA("ABC-P", abcLowPowerPPA);
+            addEvaluatedCandidate(finalCandidates, "ABC_LowPower",
+                                  abcLowPower, abcLowPowerPPA);
         }
 
         std::cout << "  - Running ABC Local-Library Rewrite..." << std::endl;
@@ -507,41 +592,32 @@ void InnovusBatchEvaluator::runBatchVerification(const std::string& benchmarksDi
             if (!abcLocalBlif.empty() && std::filesystem::exists(abcLocalBlif)) {
                 diff.abcLocalPPA = evalOnce(abcLocalBlif);
                 printPPA("ABC-L", diff.abcLocalPPA);
+                addEvaluatedCandidate(finalCandidates, "ABC_Local",
+                                      abcLocalBlif, diff.abcLocalPPA);
             }
         }
 
-        std::cout << "  - Running PONO Optimization (Tournament Mode)..." << std::endl;
-        
-        // 引擎 A：激进模式 (Aggressive)
-        std::string ponoAggBlif = rewriteBlifWithLibrary(filePath, avgProbs, true); 
-        PPAResult aggPPA; aggPPA.valid = false;
-        if (!ponoAggBlif.empty() && std::filesystem::exists(ponoAggBlif)) {
-            aggPPA = evalOnce(ponoAggBlif);
+        std::cout << "  - Running PONO Optimization (Portfolio Mode)..." << std::endl;
+        for (const auto& [strategy, ponoBlif] :
+             runPonoRewritePortfolio(filePath, avgProbs)) {
+            if (ponoBlif.empty() || !std::filesystem::exists(ponoBlif)) {
+                continue;
+            }
+            PPAResult ponoVariantPPA = evalOnce(ponoBlif);
+            printPPA(strategy, ponoVariantPPA);
+            addEvaluatedCandidate(finalCandidates, strategy, ponoBlif,
+                                  ponoVariantPPA);
         }
 
-        // 引擎 B：保守模式 (Conservative)
-        std::string ponoConsBlif = rewriteBlifWithLibrary(filePath, avgProbs, false);
-        PPAResult consPPA; consPPA.valid = false;
-        if (!ponoConsBlif.empty() && std::filesystem::exists(ponoConsBlif)) {
-            consPPA = evalOnce(ponoConsBlif);
-        }
-
-        // 锦标赛决断：不看 ORIG，只选内部最优
         diff.ponoPPA.valid = false;
         std::string winningStrategy = "NONE";
-        
-        if (aggPPA.valid || consPPA.valid) {
-            double pAgg = aggPPA.valid ? aggPPA.power_total : 1e9;
-            double pCons = consPPA.valid ? consPPA.power_total : 1e9;
-            
-            if (pAgg <= pCons) {
-                diff.ponoPPA = aggPPA;
-                winningStrategy = "Aggressive";
-            } else {
-                diff.ponoPPA = consPPA;
-                winningStrategy = "Conservative";
-            }
-            printPPA("PONO", diff.ponoPPA);
+        const EvaluatedNetlistCandidate best =
+            selectLowestPowerCandidate(finalCandidates);
+        if (hasUsablePower(best.ppa)) {
+            diff.ponoPPA = best.ppa;
+            winningStrategy = best.strategy;
+            diff.selectedStrategy = winningStrategy;
+            printPPA("BEST", diff.ponoPPA);
             std::cout << "    [Strategy Selected] " << winningStrategy << std::endl;
         }
 
@@ -664,10 +740,27 @@ SingleBlifResult InnovusBatchEvaluator::analyzeSingleBlif(
 
             std::string abcHighBlif;
             if (result.origPPA.valid) {
+                std::vector<EvaluatedNetlistCandidate> finalCandidates;
+                addEvaluatedCandidate(finalCandidates, "Original",
+                                      inputBlifPath, result.origPPA);
+
                 abcHighBlif = runABCExhaustiveOpt(inputBlifPath);
                 if (!abcHighBlif.empty() && fs::exists(abcHighBlif)) {
                     result.abcHighPPA =
                         verifier_.getPPAResult(abcHighBlif, inputProbs, inputActs);
+                    addEvaluatedCandidate(finalCandidates, "ABC_Global",
+                                          abcHighBlif, result.abcHighPPA);
+                }
+
+                const std::string abcLowPowerBlif =
+                    runABCLowPowerOpt(inputBlifPath);
+                if (!abcLowPowerBlif.empty() && fs::exists(abcLowPowerBlif)) {
+                    const PPAResult abcLowPowerPPA =
+                        verifier_.getPPAResult(abcLowPowerBlif,
+                                               inputProbs,
+                                               inputActs);
+                    addEvaluatedCandidate(finalCandidates, "ABC_LowPower",
+                                          abcLowPowerBlif, abcLowPowerPPA);
                 }
 
                 const std::string mappedOrigin = run4LutMappingOnly(inputBlifPath);
@@ -677,38 +770,30 @@ SingleBlifResult InnovusBatchEvaluator::analyzeSingleBlif(
                     if (!abcLocalBlif.empty() && fs::exists(abcLocalBlif)) {
                         result.abcLocalPPA =
                             verifier_.getPPAResult(abcLocalBlif, inputProbs, inputActs);
+                        addEvaluatedCandidate(finalCandidates, "ABC_Local",
+                                              abcLocalBlif,
+                                              result.abcLocalPPA);
                     }
-                }
-
-                const std::string ponoAggBlif =
-                    rewriteBlifWithLibrary(inputBlifPath, inputProbs, true);
-                PPAResult aggPPA;
-                if (!ponoAggBlif.empty() && fs::exists(ponoAggBlif)) {
-                    aggPPA = verifier_.getPPAResult(
-                        ponoAggBlif, inputProbs, inputActs);
-                }
-
-                const std::string ponoConsBlif =
-                    rewriteBlifWithLibrary(inputBlifPath, inputProbs, false);
-                PPAResult consPPA;
-                if (!ponoConsBlif.empty() && fs::exists(ponoConsBlif)) {
-                    consPPA = verifier_.getPPAResult(
-                        ponoConsBlif, inputProbs, inputActs);
                 }
 
                 std::string winningBlifPath;
-                double pAgg = aggPPA.valid ? aggPPA.power_total : 1e18;
-                double pCons = consPPA.valid ? consPPA.power_total : 1e18;
-                if (aggPPA.valid || consPPA.valid) {
-                    if (pAgg <= pCons) {
-                        result.ponoPPA = aggPPA;
-                        result.selectedStrategy = "Aggressive";
-                        winningBlifPath = ponoAggBlif;
-                    } else {
-                        result.ponoPPA = consPPA;
-                        result.selectedStrategy = "Conservative";
-                        winningBlifPath = ponoConsBlif;
+                for (const auto& [strategy, ponoBlif] :
+                     runPonoRewritePortfolio(inputBlifPath, inputProbs)) {
+                    if (ponoBlif.empty() || !fs::exists(ponoBlif)) {
+                        continue;
                     }
+                    const PPAResult ponoVariantPPA =
+                        verifier_.getPPAResult(ponoBlif, inputProbs, inputActs);
+                    addEvaluatedCandidate(finalCandidates, strategy, ponoBlif,
+                                          ponoVariantPPA);
+                }
+
+                const EvaluatedNetlistCandidate best =
+                    selectLowestPowerCandidate(finalCandidates);
+                if (hasUsablePower(best.ppa)) {
+                    result.ponoPPA = best.ppa;
+                    result.selectedStrategy = best.strategy;
+                    winningBlifPath = best.blifPath;
                 }
 
                 if (!winningBlifPath.empty() && fs::exists(winningBlifPath)) {
@@ -844,6 +929,30 @@ std::string InnovusBatchEvaluator::runABCExhaustiveOpt(const std::string& inputB
     int ret = system(abcCmd.c_str());
     if (ret != 0 || !fs::exists(outPath)) return "";
     return verifyRewriteOrRevert(inputBlif, outPath, "ABC_exhaustive");
+}
+
+std::string InnovusBatchEvaluator::runABCLowPowerOpt(const std::string& inputBlif) {
+    namespace fs = std::filesystem;
+
+    fs::path workDir = workDir_;
+    if (!fs::exists(workDir)) fs::create_directories(workDir);
+
+    const std::string baseName = fs::path(inputBlif).stem().string();
+    const std::string outPath =
+        (workDir / (baseName + "_abc_power.blif")).string();
+    const std::string logPath =
+        (workDir / (baseName + "_abc_power.log")).string();
+
+    const std::string powerSeq =
+        "strash; dc2; rewrite -z; refactor -z; dc2; "
+        "if -K " + abcLutK() + " -a; sweep; topo";
+    const std::string abcCmd = abcPath_ + " -c \"read_blif " + inputBlif +
+                               "; " + powerSeq + "; write_blif " + outPath +
+                               "\" > " + logPath + " 2>&1";
+
+    int ret = system(abcCmd.c_str());
+    if (ret != 0 || !fs::exists(outPath)) return "";
+    return verifyRewriteOrRevert(inputBlif, outPath, "ABC_low_power");
 }
 
 bool readLineSafe(std::ifstream& ifs, std::string& outLine) {
@@ -1097,25 +1206,107 @@ std::string fes::InnovusBatchEvaluator::rewriteBlifWithLibrary(
     const std::vector<double>& actualProbs,
     bool isAggressive)
 {
+    return rewriteBlifWithLibraryProfile(
+        originalBlifPath,
+        actualProbs,
+        isAggressive ? PonoRewriteProfile::Aggressive
+                     : PonoRewriteProfile::Conservative);
+}
+
+std::string fes::InnovusBatchEvaluator::rewriteBlifWithLibraryProfile(
+    const std::string& originalBlifPath,
+    const std::vector<double>& actualProbs,
+    PonoRewriteProfile profile)
+{
     RewriteConfig cfg;
     cfg.preMapAbcSeq         = "strash; if -K " + abcLutK() + " -a";
-    cfg.kSwitchWeight        = isAggressive ? 0.25 : 0.35;
-    cfg.kGateWeight          = isAggressive ? 0.015 : 0.030;
-    cfg.kOutputWeight        = isAggressive ? 0.05 : 0.10;
-    cfg.kActivityWeight      = isAggressive ? 0.02 : 0.04;
-    cfg.kLibraryScoreWeight  = isAggressive ? 0.03 : 0.06;
     cfg.enableNpn           = true;
     cfg.allowNegation       = true;
-    cfg.useImprovementFilter = !isAggressive;
-    cfg.kImproveMargin       = 0.005;
-    cfg.cleanupAbcSeq =
-        isAggressive
-            ? ("strash; dc2; if -K " + abcLutK() + " -a; sweep; topo")
-            : ("strash; dc2; balance; if -K " + abcLutK() +
-               " -a; sweep; topo");
-    cfg.tag                  = isAggressive ? "PONO_agg" : "PONO_cons";
+
+    switch (profile) {
+    case PonoRewriteProfile::Aggressive:
+        cfg.kSwitchWeight        = 0.25;
+        cfg.kGateWeight          = 0.015;
+        cfg.kOutputWeight        = 0.05;
+        cfg.kActivityWeight      = 0.02;
+        cfg.kLibraryScoreWeight  = 0.03;
+        cfg.useImprovementFilter = false;
+        cfg.kImproveMargin       = 0.005;
+        cfg.cleanupAbcSeq =
+            "strash; dc2; if -K " + abcLutK() + " -a; sweep; topo";
+        cfg.tag                  = "PONO_agg";
+        break;
+    case PonoRewriteProfile::Conservative:
+        cfg.kSwitchWeight        = 0.35;
+        cfg.kGateWeight          = 0.020;
+        cfg.kOutputWeight        = 0.10;
+        cfg.kActivityWeight      = 0.04;
+        cfg.kLibraryScoreWeight  = 0.08;
+        cfg.useImprovementFilter = true;
+        cfg.kImproveMargin       = 0.0;
+        cfg.cleanupAbcSeq =
+            "strash; dc2; balance; if -K " + abcLutK() +
+            " -a; sweep; topo";
+        cfg.tag                  = "PONO_cons";
+        break;
+    case PonoRewriteProfile::LowPower:
+        cfg.kSwitchWeight        = 0.55;
+        cfg.kGateWeight          = 0.010;
+        cfg.kOutputWeight        = 0.18;
+        cfg.kActivityWeight      = 0.06;
+        cfg.kLibraryScoreWeight  = 0.25;
+        cfg.useImprovementFilter = false;
+        cfg.kImproveMargin       = 0.0;
+        cfg.cleanupAbcSeq        = "sweep; topo";
+        cfg.tag                  = "PONO_lp";
+        break;
+    case PonoRewriteProfile::Strict:
+        cfg.kSwitchWeight        = 0.65;
+        cfg.kGateWeight          = 0.020;
+        cfg.kOutputWeight        = 0.14;
+        cfg.kActivityWeight      = 0.08;
+        cfg.kLibraryScoreWeight  = 0.22;
+        cfg.useImprovementFilter = true;
+        cfg.kImproveMargin       = 0.01;
+        cfg.cleanupAbcSeq =
+            "strash; dc2; if -K " + abcLutK() + " -a; sweep; topo";
+        cfg.tag                  = "PONO_strict";
+        break;
+    case PonoRewriteProfile::PositiveOnly:
+        cfg.kSwitchWeight        = 0.50;
+        cfg.kGateWeight          = 0.012;
+        cfg.kOutputWeight        = 0.12;
+        cfg.kActivityWeight      = 0.06;
+        cfg.kLibraryScoreWeight  = 0.22;
+        cfg.allowNegation        = false;
+        cfg.useImprovementFilter = false;
+        cfg.kImproveMargin       = 0.0;
+        cfg.cleanupAbcSeq        = "sweep; topo";
+        cfg.tag                  = "PONO_pos";
+        break;
+    }
     return rewriteBlifUnified(originalBlifPath, actualProbs,
                               hexMappingLib_, cfg);
+}
+
+std::vector<std::pair<std::string, std::string>>
+fes::InnovusBatchEvaluator::runPonoRewritePortfolio(
+    const std::string& originalBlifPath,
+    const std::vector<double>& actualProbs)
+{
+    std::vector<std::pair<std::string, std::string>> attempts;
+    auto add = [&](const std::string& label, PonoRewriteProfile profile) {
+        const std::string path =
+            rewriteBlifWithLibraryProfile(originalBlifPath, actualProbs, profile);
+        attempts.push_back({label, path});
+    };
+
+    add("PONO_Aggressive", PonoRewriteProfile::Aggressive);
+    add("PONO_Conservative", PonoRewriteProfile::Conservative);
+    add("PONO_LowPower", PonoRewriteProfile::LowPower);
+    add("PONO_Strict", PonoRewriteProfile::Strict);
+    add("PONO_PositiveOnly", PonoRewriteProfile::PositiveOnly);
+    return attempts;
 }
 
 // ============================================================================
@@ -1691,31 +1882,46 @@ SingleOptResult InnovusBatchEvaluator::optimizeSingleBlifFromContent(
         return result;
     }
 
-    // 4. 执行 PONO 优化
-    std::string ponoBlifPath = rewriteBlifWithLibrary(tempInputPath, actualProbs, true);
-    
-    if (!ponoBlifPath.empty() && fs::exists(ponoBlifPath)) {
-        // 5. 评估优化后功耗
-        PPAResult ponoPPA = verifier_.getAveragePPAResult(ponoBlifPath, workloads);
-        if (ponoPPA.valid) {
-            result.optimizedPower = ponoPPA.power_total;
-            result.success = true;
-            
-            // 6. 将优化后的文件内容读取到内存中，准备放入 JSON
-            std::ifstream ifs(ponoBlifPath);
-            if (ifs.is_open()) {
-                std::string content((std::istreambuf_iterator<char>(ifs)),
-                                    (std::istreambuf_iterator<char>()));
-                result.optimizedBlifContent = content;
-            }
-        } else {
-            result.errorMessage = "Optimized BLIF evaluation failed.";
+    // 4. 执行可用优化 portfolio，并用真实 PPA 选择最低功耗网表。
+    std::vector<EvaluatedNetlistCandidate> finalCandidates;
+    addEvaluatedCandidate(finalCandidates, "Original", tempInputPath, origPPA);
+
+    const std::string abcHighBlif = runABCExhaustiveOpt(tempInputPath);
+    if (!abcHighBlif.empty() && fs::exists(abcHighBlif)) {
+        addEvaluatedCandidate(finalCandidates, "ABC_Global", abcHighBlif,
+                              verifier_.getAveragePPAResult(abcHighBlif, workloads));
+    }
+
+    const std::string abcLowPowerBlif = runABCLowPowerOpt(tempInputPath);
+    if (!abcLowPowerBlif.empty() && fs::exists(abcLowPowerBlif)) {
+        addEvaluatedCandidate(finalCandidates, "ABC_LowPower", abcLowPowerBlif,
+                              verifier_.getAveragePPAResult(abcLowPowerBlif,
+                                                            workloads));
+    }
+
+    for (const auto& [strategy, ponoBlif] :
+         runPonoRewritePortfolio(tempInputPath, actualProbs)) {
+        if (ponoBlif.empty() || !fs::exists(ponoBlif)) {
+            continue;
         }
-        
-        // 清理生成的优化文件
-        std::remove(ponoBlifPath.c_str());
+        addEvaluatedCandidate(finalCandidates, strategy, ponoBlif,
+                              verifier_.getAveragePPAResult(ponoBlif, workloads));
+    }
+
+    const EvaluatedNetlistCandidate best =
+        selectLowestPowerCandidate(finalCandidates);
+    if (hasUsablePower(best.ppa) && !best.blifPath.empty()) {
+        result.optimizedPower = best.ppa.power_total;
+        result.success = true;
+
+        std::ifstream ifs(best.blifPath);
+        if (ifs.is_open()) {
+            std::string content((std::istreambuf_iterator<char>(ifs)),
+                                (std::istreambuf_iterator<char>()));
+            result.optimizedBlifContent = content;
+        }
     } else {
-        result.errorMessage = "PONO Optimized BLIF was not generated.";
+        result.errorMessage = "No valid optimized BLIF was generated.";
     }
 
     // 清理初始的临时输入文件

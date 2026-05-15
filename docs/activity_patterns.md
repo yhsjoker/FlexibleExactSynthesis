@@ -1,56 +1,146 @@
-# Activity Pattern Generation
+# 活动模式生成
 
-Library generation uses `ActivityPatternSpec` and `generateActivityPatterns()`
-from `include/fes/flow/ActivityPatternGenerator.h`.
+建库阶段会为每个目标布尔函数生成一组输入活动模式。活动模式决定精确综合时用于估算功耗的输入概率，因此会直接影响库中候选电路的排序和最终重写质量。
 
-Default CLI behavior is the legacy uniform sweep:
+相关实现位于：
 
-```bash
-./build/fes_app generate --mode exhaustive --k 4 --num 1 \
-  --out activity_uniform_k4_num1
+- `include/fes/flow/ActivityPatternGenerator.h`
+- `src/flow/ActivityPatternGenerator.cpp`
+
+## 支持的模式
+
+### `uniform`
+
+`uniform` 表示所有输入引脚使用相同概率。当前默认行为是：
+
+```text
+(0.1,0.1,0.1,0.1)
+(0.2,0.2,0.2,0.2)
+...
+(0.9,0.9,0.9,0.9)
 ```
 
-Switch to a cartesian grid with `--activity-mode cartesian` and
-comma-separated `--activity-levels`:
+配置示例：
 
-```bash
-./build/fes_app generate --mode exhaustive --k 4 --num 1 \
-  --activity-mode cartesian --activity-levels 0.2,0.4,0.6,0.8 \
-  --out activity_cartesian_k4_num1
+```json
+{
+  "generate": {
+    "activity": {
+      "mode": "uniform"
+    }
+  }
+}
 ```
 
-Use an explicit list with semicolon-separated patterns. Each pattern is a
-comma-separated vector whose width must match the generated function input
-count:
+如果显式给出 levels：
+
+```json
+{
+  "generate": {
+    "activity": {
+      "mode": "uniform",
+      "levels": [0.2, 0.5, 0.8]
+    }
+  }
+}
+```
+
+则 K=4 时生成：
+
+```text
+(0.2,0.2,0.2,0.2)
+(0.5,0.5,0.5,0.5)
+(0.8,0.8,0.8,0.8)
+```
+
+### `cartesian`
+
+`cartesian` 会对每个输入引脚做笛卡尔积组合。K=4、levels 为 `[0.3, 0.7]` 时，会生成 `2^4 = 16` 个模式。
+
+```json
+{
+  "generate": {
+    "activity": {
+      "mode": "cartesian",
+      "levels": [0.3, 0.7]
+    }
+  }
+}
+```
+
+注意：如果 levels 是 `[0.1,0.2,...,0.9]`，K=4 时会生成 `9^4 = 6561` 个模式，建库时间和输出体积都会显著增加。
+
+### `explicit`
+
+`explicit` 用于手工指定完整活动向量：
+
+```json
+{
+  "generate": {
+    "activity": {
+      "mode": "explicit",
+      "explicit": [
+        [0.1, 0.2, 0.3, 0.4],
+        [0.4, 0.3, 0.2, 0.1]
+      ]
+    }
+  }
+}
+```
+
+每个向量的长度必须等于当前目标函数输入数。
+
+## CLI 示例
+
+默认均匀模式：
 
 ```bash
-./build/fes_app generate --mode exhaustive --k 4 --num 1 \
+./build/fes_app generate --mode exhaustive --k 4 --num 1 --out activity_uniform_example
+```
+
+笛卡尔积模式：
+
+```bash
+./build/fes_app generate \
+  --mode exhaustive \
+  --k 4 \
+  --num 1 \
+  --activity-mode cartesian \
+  --activity-levels 0.2,0.4,0.6,0.8 \
+  --out activity_cartesian_example
+```
+
+显式模式：
+
+```bash
+./build/fes_app generate \
+  --mode exhaustive \
+  --k 4 \
+  --num 1 \
   --activity-mode explicit \
   --activity-explicit "0.1,0.2,0.3,0.4;0.4,0.3,0.2,0.1" \
-  --out activity_explicit_k4_num1
+  --out activity_explicit_example
 ```
 
-Relative `--out` paths are rooted under the project `results_repo`. Both
-`--out activity_cartesian_k4_num1` and
-`--out results_repo/activity_cartesian_k4_num1` write below that repository
-output root instead of below the process working directory.
+## 输出命名
 
-For C++ callers, `LibraryGenerationConfig::activityPatternSpec` still accepts
-`ActivityPatternSpec::UniformSweep(...)`, `CartesianGrid(...)`, or
-`ExplicitList(...)`. `generateActivityPatterns()` remains the customization
-entry point for adding a new generation strategy without changing the synthesis
-pipeline.
+活动值会被归一化到 `[0,1]`，并以稳定格式写入库文件名和 CSV 记录中。默认整数百分比模式会保留历史标签，例如：
 
-The same modes are available through strict JSON config files:
+```text
+_10_10_10_10
+```
 
-- `config/generate_k4_uniform.json`
-- `config/generate_k4_cartesian.json`
-- `config/generate_k4_explicit.json`
+非整数百分比会使用稳定的小数标签，例如：
 
-See `docs/configuration.md` and the commented examples in `config/examples/`.
+```text
+_p0p125
+```
 
-Floating-point activity values are normalized to `[0, 1]`, quantized at `1e-9`,
-and serialized with fixed 9-decimal formatting for deterministic duplicate
-detection. Legacy integer-percent tags such as `_10_10_10_10` are preserved for
-default sweep values; non-integer-percent values use stable decimal tag
-components such as `_p0p125`.
+这样可以避免浮点格式差异导致重复检测不稳定。
+
+## 建议
+
+- 快速实验优先使用 `uniform`。
+- 需要覆盖不均匀输入概率时使用 `explicit`。
+- 只有在确实需要完整输入概率组合时才使用 `cartesian`。
+- 对于当前只包含同活动输入模式的库，评测时的重写打分会更依赖实际 PPA 选择兜底，因此建议保留最终 portfolio 选择逻辑。

@@ -11,8 +11,8 @@
   },
   "evaluate": {
     "benchmark_dir": "/home/yhs_joker/datasets/benchmarks",
-    "library_dir": "library_middle",
-    "output_dir": "evaluation_default",
+    "library_dir": "library_s0",
+    "output_dir": "evaluation_s0",
     "verify": true
   }
 }
