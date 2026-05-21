@@ -34,6 +34,7 @@ struct SingleBlifOptions {
     std::filesystem::path outputDir;
     std::filesystem::path resultJsonPath;
     std::vector<double> inputProbs;
+    bool randomInputProbs = false;
     std::vector<double> inputActs;
     bool jsonStdout = false;
     bool verify = false;

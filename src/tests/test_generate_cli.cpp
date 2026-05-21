@@ -293,6 +293,13 @@ void verifySingleBlifConfigParsing() {
     require(overridden.resultJsonPath == fs::path("results_repo/override.json"),
             "CLI --result-json should override config result_json.");
 
+    const app::SingleBlifOptions randomProbs = app::parseSingleBlifOptions(
+        {"--config", path.string(), "--input-probs", "random"},
+        6,
+        "optimize-blif");
+    require(randomProbs.randomInputProbs && randomProbs.inputProbs.empty(),
+            "CLI --input-probs random should enable random probability mode.");
+
     const app::SingleBlifOptions jsonFlag = app::parseSingleBlifOptions(
         {"--blif", "design.blif", "--input-probs", "0.5,0.5", "--json"},
         6,
@@ -361,8 +368,8 @@ void verifyShippedConfigsParse() {
     require(optSingleOpts.outputDir ==
                 fs::path("single_blif_opt_example"),
             "Shipped optimize_blif.json output_dir changed unexpectedly.");
-    require(optSingleOpts.inputProbs.size() == 4,
-            "Shipped optimize_blif.json should include 4 input probabilities.");
+    require(optSingleOpts.randomInputProbs && optSingleOpts.inputProbs.empty(),
+            "Shipped optimize_blif.json should use random input probabilities.");
 
     const app::SingleBlifOptions evalSingleOpts =
         app::parseSingleBlifOptions({"--config", evalSingleConfig.string()},
@@ -373,6 +380,8 @@ void verifyShippedConfigsParse() {
     require(evalSingleOpts.outputDir ==
                 fs::path("single_blif_eval_example"),
             "Shipped evaluate_blif.json output_dir changed unexpectedly.");
+    require(evalSingleOpts.randomInputProbs && evalSingleOpts.inputProbs.empty(),
+            "Shipped evaluate_blif.json should use random input probabilities.");
 }
 
 void verifyMemoryBudgetWorkerReduction() {

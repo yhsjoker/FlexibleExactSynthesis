@@ -5,10 +5,10 @@
     "python_script": "scripts/single_power_run.py"
   },
   "evaluate_blif": {
-    "blif_path": "benchmarks/example.blif",
+    "blif_path": "/home/yhs_joker/datasets/benchmarks/random_control/arbiter.blif",
     "library_dir": "library_middle",
-    "output_dir": "single_blif_eval_example",
-    "input_probs": [0.5, 0.5, 0.5, 0.5],
+    "output_dir": "arbiter_eval_blif",
+    "input_probs": "random",
     "verify": true
   }
 }

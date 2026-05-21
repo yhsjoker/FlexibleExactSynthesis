@@ -178,7 +178,7 @@ evaluation_summary.json
     "blif_path": "benchmarks/example.blif",
     "library_dir": "library_middle",
     "output_dir": "single_blif_opt_example",
-    "input_probs": [0.5, 0.5, 0.5, 0.5],
+    "input_probs": "random",
     "verify": true,
     "emit_blif_content": false
   }
@@ -191,11 +191,12 @@ evaluation_summary.json
 ./build/fes_app optimize-blif \
   --config config/optimize_blif.json \
   --blif /path/to/design.blif \
-  --input-probs 0.1,0.2,0.3,0.4 \
+  --input-probs random \
   --json
 ```
 
 `--json` 模式适合前后端调用，因为 stdout 只包含最终 JSON，不混入普通日志。
+`input_probs` 可写为数值数组或 CLI CSV；如果写成 `random`，程序会根据 BLIF `.inputs` 数量生成一组随机输入概率。需要可复现实验时应使用固定数值数组。
 
 ## 恢复与重跑
 
@@ -227,7 +228,7 @@ rerun_timeout
 ./build/fes_app optimize-blif \
   --blif /abs/path/input.blif \
   --lib library_middle \
-  --input-probs 0.1,0.2,0.3,0.4 \
+  --input-probs random \
   --out jobs/job_001 \
   --json
 ```

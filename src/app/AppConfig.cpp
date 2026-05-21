@@ -235,6 +235,23 @@ std::string toLowerCopy(std::string text) {
     return text;
 }
 
+std::string trimCopy(std::string text) {
+    text.erase(text.begin(),
+               std::find_if(text.begin(), text.end(), [](unsigned char c) {
+                   return !std::isspace(c);
+               }));
+    text.erase(
+        std::find_if(text.rbegin(), text.rend(), [](unsigned char c) {
+            return !std::isspace(c);
+        }).base(),
+        text.end());
+    return text;
+}
+
+bool isRandomPlaceholder(const std::string& value) {
+    return toLowerCopy(trimCopy(value)) == "random";
+}
+
 const JsonValue* findMember(const JsonValue& object, const std::string& key) {
     if (!object.isObject()) {
         return nullptr;
@@ -384,16 +401,7 @@ std::vector<double> parseCsvNumberList(const std::string& text,
     std::string token;
     std::vector<double> values;
     while (std::getline(input, token, ',')) {
-        std::string trimmed = token;
-        trimmed.erase(trimmed.begin(),
-                      std::find_if(trimmed.begin(), trimmed.end(), [](unsigned char c) {
-                          return !std::isspace(c);
-                      }));
-        trimmed.erase(
-            std::find_if(trimmed.rbegin(), trimmed.rend(), [](unsigned char c) {
-                return !std::isspace(c);
-            }).base(),
-            trimmed.end());
+        std::string trimmed = trimCopy(token);
         if (trimmed.empty()) {
             throw std::runtime_error(key + " contains an empty value.");
         }
@@ -425,6 +433,21 @@ std::vector<double> getNumberList(const JsonValue& object,
     }
     throw std::runtime_error("Config key must be a number array or CSV string: " +
                              key);
+}
+
+void applyInputProbsConfig(const JsonValue& section, SingleBlifOptions* opts) {
+    const JsonValue* value = findMember(section, "input_probs");
+    if (value == nullptr) {
+        return;
+    }
+    if (value->isString() && isRandomPlaceholder(value->stringValue)) {
+        opts->randomInputProbs = true;
+        opts->inputProbs.clear();
+        return;
+    }
+
+    opts->inputProbs = getNumberList(section, "input_probs", opts->inputProbs);
+    opts->randomInputProbs = false;
 }
 
 std::string normalizeConfigCommandName(std::string command) {
@@ -659,8 +682,7 @@ void applySingleBlifConfig(const JsonValue& root,
     opts->abcLocalLibraryDir = getPath(*section, "abc_local_library_dir");
     opts->outputDir = getPath(*section, "output_dir");
     opts->resultJsonPath = getPath(*section, "result_json");
-    opts->inputProbs =
-        getNumberList(*section, "input_probs", opts->inputProbs);
+    applyInputProbsConfig(*section, opts);
     opts->inputActs =
         getNumberList(*section, "input_acts", opts->inputActs);
     opts->jsonStdout = getBool(*section, "json_stdout", opts->jsonStdout);
@@ -806,7 +828,13 @@ void applySingleBlifOverrides(const std::vector<std::string>& args,
             continue;
         }
         if (consumeOption(args, i, "--input-probs", &value)) {
-            opts->inputProbs = parseCsvNumberList(value, "--input-probs");
+            if (isRandomPlaceholder(value)) {
+                opts->randomInputProbs = true;
+                opts->inputProbs.clear();
+            } else {
+                opts->inputProbs = parseCsvNumberList(value, "--input-probs");
+                opts->randomInputProbs = false;
+            }
             continue;
         }
         if (consumeOption(args, i, "--input-acts", &value)) {
@@ -820,7 +848,8 @@ void applySingleBlifOverrides(const std::vector<std::string>& args,
 
 void validateSingleBlifOptions(const SingleBlifOptions& opts,
                                const std::string& commandName) {
-    if (!opts.inputActs.empty() &&
+    if (!opts.randomInputProbs &&
+        !opts.inputActs.empty() &&
         opts.inputActs.size() != opts.inputProbs.size()) {
         throw std::runtime_error(
             commandName + ": input_probs and input_acts must have the same length.");

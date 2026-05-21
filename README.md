@@ -135,7 +135,7 @@ results_repo/<evaluation_name>/
 ./build/fes_app optimize-blif \
   --blif /path/to/design.blif \
   --lib library_middle \
-  --input-probs 0.1,0.2,0.3,0.4 \
+  --input-probs random \
   --out single_job_001 \
   --json
 ```
@@ -150,7 +150,7 @@ results_repo/single_job_001/
 └── stderr.log
 ```
 
-`input-probs` 的数量必须与 BLIF `.inputs` 数量一致。若不提供 `input-acts`，工具会按 `2*p*(1-p)` 自动推导输入翻转率。
+`input-probs` 可以写成逗号分隔数值，例如 `0.1,0.2,0.3,0.4`，其数量必须与 BLIF `.inputs` 数量一致；也可以写成 `random`，工具会按 `.inputs` 数量生成一组随机输入概率。若不提供 `input-acts`，工具会按 `2*p*(1-p)` 自动推导输入翻转率。
 
 ## 单个 BLIF 评测
 
@@ -158,7 +158,7 @@ results_repo/single_job_001/
 ./build/fes_app evaluate-blif \
   --blif /path/to/design.blif \
   --lib library_middle \
-  --input-probs 0.5,0.5,0.5,0.5 \
+  --input-probs random \
   --out single_eval_001 \
   --json
 ```

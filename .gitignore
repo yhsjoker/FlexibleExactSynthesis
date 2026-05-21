@@ -33,6 +33,7 @@ desktop.ini
 # ===========================
 # 忽略所有实验结果
 results_repo/
+demo_results/
 
 # 运行日志与临时目录
 logs/

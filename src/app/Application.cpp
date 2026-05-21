@@ -17,6 +17,7 @@
 #include <iomanip>
 #include <iostream>
 #include <memory>
+#include <random>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -239,6 +240,31 @@ std::vector<double> deriveActsFromProbs(const std::vector<double>& probs) {
     return acts;
 }
 
+std::vector<double> generateRandomInputProbs(int inputCount) {
+    std::random_device device;
+    std::mt19937 generator(device());
+    std::uniform_real_distribution<double> distribution(0.0, 1.0);
+
+    std::vector<double> probs;
+    probs.reserve(static_cast<std::size_t>(inputCount));
+    for (int i = 0; i < inputCount; ++i) {
+        probs.push_back(distribution(generator));
+    }
+    return probs;
+}
+
+std::string formatProbabilityVector(const std::vector<double>& values) {
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(4);
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (i > 0) {
+            out << ",";
+        }
+        out << values[i];
+    }
+    return out.str();
+}
+
 void writeTextFile(const fs::path& path, const std::string& text) {
     if (path.has_parent_path()) {
         fs::create_directories(path.parent_path());
@@ -388,6 +414,9 @@ void printGenerateHelp(const AppContext& ctx) {
         << "                      Mark a case timeout if runtime exceeds this threshold\n"
         << "  --verify            Enable CEC on synthesized sub-circuits\n"
         << "  -h, --help          Show this message\n\n"
+        << "Examples:\n"
+        << "  fes_app generate --config config/build_library.json\n"
+        << "  fes_app generate --config config/build_library.json --resume\n\n"
         << "Notes:\n"
         << "  ABC is configured with dependencies.abc_path in JSON or ABC_PATH.\n"
         << "  The exact-synthesis gate library is derived directly from\n"
@@ -419,6 +448,9 @@ void printOptimizeHelp(const AppContext& ctx) {
         << "                      Mark an evaluation case timeout if runtime exceeds this threshold\n"
         << "  --verify            Enable rewrite-time CEC\n"
         << "  -h, --help          Show this message\n\n"
+        << "Examples:\n"
+        << "  fes_app evaluate --config config/evaluate_default.json\n"
+        << "  fes_app optimize --config config/evaluate_default.json\n\n"
         << "Notes:\n"
         << "  ABC is configured with dependencies.abc_path in JSON or ABC_PATH.\n";
 }
@@ -426,6 +458,10 @@ void printOptimizeHelp(const AppContext& ctx) {
 void printSingleBlifHelp(const AppContext& ctx,
                          const std::string& commandName) {
     const bool optimizeMode = commandName == "optimize-blif";
+    const std::string configPath =
+        optimizeMode ? "config/optimize_blif.json" : "config/evaluate_blif.json";
+    const std::string outputDir =
+        optimizeMode ? "single_opt_demo" : "single_eval_demo";
     std::cout
         << "Usage: fes_app " << commandName << " [options]\n\n"
         << (optimizeMode
@@ -442,7 +478,9 @@ void printSingleBlifHelp(const AppContext& ctx,
         << "                      (default: results_repo/single_blif/...)\n"
         << "  --result-json <file>\n"
         << "                      Result JSON path (default: <out>/result.json)\n"
-        << "  --input-probs <csv> Required comma-separated input probabilities\n"
+        << "  --input-probs <csv|random>\n"
+        << "                      Required input probabilities, or random to generate\n"
+        << "                      one probability vector from the BLIF .inputs count\n"
         << "  --input-acts <csv>  Optional comma-separated input activities\n"
         << "                      (default: derive each activity as 2*p*(1-p))\n"
         << "  --json              Print only the final result JSON to stdout\n"
@@ -451,6 +489,13 @@ void printSingleBlifHelp(const AppContext& ctx,
         << "                      (mainly for backend/API use)\n"
         << "  --verify            Enable rewrite-time CEC\n"
         << "  -h, --help          Show this message\n\n"
+        << "Examples:\n"
+        << "  fes_app " << commandName << " --config "
+        << configPath << " --json\n"
+        << "  fes_app " << commandName
+        << " --blif /path/to/design.blif --lib library_middle"
+        << " --input-probs random --out " << outputDir
+        << " --json\n\n"
         << "Notes:\n"
         << "  Relative paths resolve from the project root: "
         << ctx.projectRoot.string() << "\n";
@@ -460,7 +505,12 @@ void printValidateConfigHelp() {
     std::cout
         << "Usage: fes_app validate-config --config <file>\n\n"
         << "Parse a JSON config, resolve its paths, and check required files without\n"
-        << "running generation or evaluation.\n";
+        << "running generation or evaluation.\n\n"
+        << "Examples:\n"
+        << "  fes_app validate-config --config config/build_library.json\n"
+        << "  fes_app validate-config --config config/evaluate_default.json\n"
+        << "  fes_app validate-config --config config/optimize_blif.json\n"
+        << "  fes_app validate-config --config config/evaluate_blif.json\n";
 }
 
 void printDoctorHelp() {
@@ -468,7 +518,13 @@ void printDoctorHelp() {
         << "Usage: fes_app doctor [--config <file>]\n\n"
         << "Without --config, check the default environment discovery state.\n"
         << "With --config, resolve that config and check the command-specific\n"
-        << "dependencies and required input paths without executing the job.\n";
+        << "dependencies and required input paths without executing the job.\n\n"
+        << "Examples:\n"
+        << "  fes_app doctor\n"
+        << "  fes_app doctor --config config/build_library.json\n"
+        << "  fes_app doctor --config config/evaluate_default.json\n"
+        << "  fes_app doctor --config config/optimize_blif.json\n"
+        << "  fes_app doctor --config config/evaluate_blif.json\n";
 }
 
 void printGeneralHelp(const AppContext& ctx) {
@@ -489,6 +545,12 @@ void printGeneralHelp(const AppContext& ctx) {
         << "  evaluate-blif  Evaluate one BLIF under explicit input parameters\n"
         << "  doctor         Check tool/resource availability, optionally against a config\n"
         << "  validate-config Parse and validate a JSON config without execution\n\n"
+        << "Demo commands:\n"
+        << "  fes_app doctor --config config/build_library.json\n"
+        << "  fes_app generate --config config/build_library.json\n"
+        << "  fes_app evaluate --config config/evaluate_default.json\n"
+        << "  fes_app optimize-blif --config config/optimize_blif.json --json\n"
+        << "  fes_app evaluate-blif --config config/evaluate_blif.json --json\n\n"
         << "Compatibility:\n"
         << "  cat design.blif | fes_app -c p1 p2 ...\n"
         << "  keeps the legacy stdin API optimization path.\n\n";
@@ -830,22 +892,20 @@ int runSingleBlifCommand(const AppContext& ctx,
         opts.blifPath = resolveProjectPath(runCtx, opts.blifPath);
         result.sourceBlifPath = fs::absolute(opts.blifPath).string();
 
-        const PreparedLibraries prepared = prepareEvaluationLibraries(
-            runCtx, opts.libraryDir, opts.abcLocalLibraryDir, true);
-        opts.libraryDir = prepared.libraryDir;
-        opts.abcLocalLibraryDir = prepared.abcLocalLibraryDir;
-
-        if (opts.inputProbs.empty()) {
-            throw std::runtime_error(
-                "--input-probs is required for single-BLIF commands.");
-        }
-        if (opts.inputActs.empty()) {
-            opts.inputActs = deriveActsFromProbs(opts.inputProbs);
-        }
-
         const int inputCount = countDeclaredBlifInputs(opts.blifPath);
         if (inputCount <= 0) {
             throw std::runtime_error("Failed to determine BLIF input count.");
+        }
+        if (opts.randomInputProbs) {
+            opts.inputProbs = generateRandomInputProbs(inputCount);
+            std::cout << "[" << commandName << "] Input probabilities: random "
+                      << inputCount << " value(s) = "
+                      << formatProbabilityVector(opts.inputProbs) << "\n";
+        }
+        if (opts.inputProbs.empty()) {
+            throw std::runtime_error(
+                "--input-probs is required for single-BLIF commands. "
+                "Use '--input-probs random' to generate one vector automatically.");
         }
         if (static_cast<int>(opts.inputProbs.size()) != inputCount) {
             throw std::runtime_error(
@@ -853,10 +913,19 @@ int runSingleBlifCommand(const AppContext& ctx,
                 std::to_string(opts.inputProbs.size()) + " vs " +
                 std::to_string(inputCount) + ").");
         }
-        if (opts.inputActs.size() != opts.inputProbs.size()) {
+        if (!opts.inputActs.empty() &&
+            opts.inputActs.size() != opts.inputProbs.size()) {
             throw std::runtime_error(
                 "input-acts count does not match input-probs count.");
         }
+        if (opts.inputActs.empty()) {
+            opts.inputActs = deriveActsFromProbs(opts.inputProbs);
+        }
+
+        const PreparedLibraries prepared = prepareEvaluationLibraries(
+            runCtx, opts.libraryDir, opts.abcLocalLibraryDir, true);
+        opts.libraryDir = prepared.libraryDir;
+        opts.abcLocalLibraryDir = prepared.abcLocalLibraryDir;
 
         std::cout << "[" << commandName << "] BLIF: "
                   << fs::absolute(opts.blifPath) << "\n";
@@ -1149,7 +1218,18 @@ int runDoctorCommand(const AppContext& ctx, const std::vector<std::string>& args
                       true,
                       true);
         }
-        if (opts.inputProbs.empty()) {
+        if (opts.randomInputProbs) {
+            std::string note =
+                "generated from BLIF .inputs count at execution";
+            const int inputCount = fs::exists(blifPath)
+                                       ? countDeclaredBlifInputs(blifPath)
+                                       : 0;
+            if (inputCount > 0) {
+                note = "will generate " + std::to_string(inputCount) +
+                       " value(s) at execution";
+            }
+            printStatus("Input probabilities", "OK", {}, note);
+        } else if (opts.inputProbs.empty()) {
             std::cout << "[Doctor] Input probabilities: MISSING\n";
             ok = false;
         } else {
@@ -1255,7 +1335,33 @@ int runValidateConfigCommand(const AppContext& ctx,
                               "ABC executable",
                               "Set dependencies.abc_path in the JSON config or export ABC_PATH.");
         requireFile(runCtx.pythonScriptPath, "Python evaluation script");
-        requireFile(resolveProjectPath(runCtx, opts.blifPath), "Input BLIF");
+        const fs::path blifPath = resolveProjectPath(runCtx, opts.blifPath);
+        requireFile(blifPath, "Input BLIF");
+        const int inputCount = countDeclaredBlifInputs(blifPath);
+        if (inputCount <= 0) {
+            throw std::runtime_error("Failed to determine BLIF input count.");
+        }
+        if (opts.randomInputProbs) {
+            std::cout << "[validate-config] Input probabilities: random, "
+                      << "will generate " << inputCount << " value(s)\n";
+        } else {
+            if (opts.inputProbs.empty()) {
+                throw std::runtime_error(
+                    "input_probs is required for single-BLIF configs. "
+                    "Set it to a numeric list or \"random\".");
+            }
+            if (static_cast<int>(opts.inputProbs.size()) != inputCount) {
+                throw std::runtime_error(
+                    "input_probs count does not match BLIF .inputs count (" +
+                    std::to_string(opts.inputProbs.size()) + " vs " +
+                    std::to_string(inputCount) + ").");
+            }
+        }
+        if (!opts.inputActs.empty() &&
+            static_cast<int>(opts.inputActs.size()) != inputCount) {
+            throw std::runtime_error(
+                "input_acts count does not match BLIF .inputs count.");
+        }
         const PreparedLibraries prepared = prepareEvaluationLibraries(
             runCtx, opts.libraryDir, opts.abcLocalLibraryDir, false);
         const fs::path outputDir = opts.outputDir.empty()
@@ -1263,7 +1369,7 @@ int runValidateConfigCommand(const AppContext& ctx,
                                        : resolveResultsRepoPath(runCtx, opts.outputDir);
         std::cout << "[validate-config] OK command=" << command << "\n";
         std::cout << "[validate-config] BLIF: "
-                  << fs::absolute(resolveProjectPath(runCtx, opts.blifPath)) << "\n";
+                  << fs::absolute(blifPath) << "\n";
         std::cout << "[validate-config] Library: "
                   << fs::absolute(prepared.libraryDir) << "\n";
         std::cout << "[validate-config] Output: "

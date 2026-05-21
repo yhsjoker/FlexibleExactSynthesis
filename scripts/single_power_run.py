@@ -4,13 +4,11 @@ import paramiko
 import re
 from pathlib import Path
 
-# ================= 配置区域 =================
 VM_IP = "127.0.0.1"
 VM_PORT = 2222
 VM_USER = "joker"
 VM_PASS = "joker"
 VM_WORK_DIR = "/home/joker/remote_work"
-# ===========================================
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SSH_DEBUG_LOG_DIR = PROJECT_ROOT / "logs" / "ssh_debug"

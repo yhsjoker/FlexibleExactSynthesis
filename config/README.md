@@ -35,8 +35,8 @@
 | `build_library.json` | `generate` | 主建库配置。默认 K=4，穷举函数，活动模式为 `uniform`，输出到 `results_repo/library_middle`。 |
 | `build_library_small.json` | `generate` | 使用 `resources/standard_cells_small.csv` 的快速建库配置，适合调试流程。 |
 | `evaluate_default.json` | `evaluate` | 批量评测配置。比较 `Original / ABC Global / ABC Local / PONO portfolio`，并选择真实功耗最低的候选。 |
-| `optimize_blif.json` | `optimize-blif` | 单个 BLIF 优化模板。需要替换 `blif_path` 和输入概率。 |
-| `evaluate_blif.json` | `evaluate-blif` | 单个 BLIF 评测模板。需要替换 `blif_path` 和输入概率。 |
+| `optimize_blif.json` | `optimize-blif` | 单个 BLIF 优化模板。需要替换 `blif_path`；默认用 `input_probs: "random"` 自动生成一组输入概率。 |
+| `evaluate_blif.json` | `evaluate-blif` | 单个 BLIF 评测模板。需要替换 `blif_path`；默认用 `input_probs: "random"` 自动生成一组输入概率。 |
 
 ## 常用命令
 
@@ -203,7 +203,7 @@ evaluation_summary.json
     "blif_path": "benchmarks/example.blif",
     "library_dir": "library_middle",
     "output_dir": "single_blif_opt_example",
-    "input_probs": [0.5, 0.5, 0.5, 0.5],
+    "input_probs": "random",
     "verify": true,
     "emit_blif_content": false
   }
@@ -213,7 +213,7 @@ evaluation_summary.json
 - `blif_path`：输入 BLIF 网表。示例配置中的路径是占位符，正式运行前必须替换。
 - `library_dir`：主库目录，相对路径位于 `results_repo/` 下。
 - `output_dir`：输出目录，相对路径位于 `results_repo/` 下。
-- `input_probs`：输入静态概率，顺序必须和 `.inputs` 一致。
+- `input_probs`：输入静态概率。可以是与 `.inputs` 顺序一致的数值数组，也可以是字符串 `"random"`，运行时会按 BLIF 输入数量生成一组随机概率。
 - `input_acts`：可选输入翻转率。省略时按 `2*p*(1-p)` 自动计算。
 - `json_stdout`：为 `true` 时 stdout 只输出最终 JSON。
 - `emit_blif_content`：为 `true` 时在 `result.json` 中嵌入优化后 BLIF 文本。

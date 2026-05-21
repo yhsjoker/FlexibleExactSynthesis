@@ -3,8 +3,8 @@
   "dependencies": {
     "abc_path": "/home/yhs_joker/softwares/abc/abc",
     "python_script": "scripts/single_power_run.py",
-    "genlib_path": "resources/nangate_45nm.genlib",
-    "liberty_path": "resources/NangateOpenCellLibrary_typical.lib",
+    "genlib_path": "resources/nangate.genlib",
+    "liberty_path": "resources/NanGate_15nm_OCL_typical_conditional_nldm.lib",
     "standard_cell_csv": "resources/standard_cells.csv"
   },
   "run": {
@@ -15,18 +15,19 @@
     "max_total_memory_mb": 51200
   },
   "generate": {
-    "k": 4,
-    "num_functions": 0,
+    "k": 3,
+    "num_functions": 2,
     "function_source": "exhaustive",
-    "output_dir": "library_middle",
-    "verify": false,
+    "output_dir": "library_demo",
+    "verify": true,
     "timeouts_ms": {
       "sat": 20000,
       "optimization": 100000,
       "case": 0
     },
     "activity": {
-      "mode": "uniform"
+      "mode": "uniform",
+      "levels": [0.1, 0.5, 0.9]
     }
   }
 }
